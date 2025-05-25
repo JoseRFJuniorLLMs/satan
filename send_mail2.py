@@ -18,12 +18,9 @@ class EmailAnalysis(BaseModel):
     topic: Optional[str] = Field(None, alias="topico_principal")
 
 
-# Constantes de nome de arquivo removidas, serão passadas como parâmetro
+# Constantes de nome de arquivo REMOVIDAS daqui
 
-# Função send_email_placeholder removida (a real estará em satan5.py)
-# Função get_emails_placeholder removida (a real estará em satan5.py)
-
-def read_emails_from_file_internal(file_path):  # Renomeada
+def read_emails_from_file_internal(file_path: str) -> List[dict]:
     """Lê e-mails do arquivo especificado (populado por satan5.py) e retorna lista de dicionários."""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -56,7 +53,7 @@ def read_emails_from_file_internal(file_path):  # Renomeada
     return emails
 
 
-def analyze_email_category(llm_client, email_content_dict):
+def analyze_email_category(llm_client, email_content_dict: dict) -> Optional[EmailAnalysis]:
     """Analisa um único e-mail usando o cliente LLM fornecido para categorização."""
     body = email_content_dict.get('body', '').strip()
     subject = email_content_dict.get('subject', 'Sem Assunto')
@@ -78,7 +75,7 @@ def analyze_email_category(llm_client, email_content_dict):
         analysis_result = chain.invoke({"corpo_email_snippet": email_body_for_prompt})
         if analysis_result:
             print(f"\nAnalisando com Gemini (Categoria): {subject}")
-            print(f"Resultado da análise: {json.dumps(analysis_result, indent=2, ensure_ascii=False)}")
+            # print(f"Resultado da análise: {json.dumps(analysis_result, indent=2, ensure_ascii=False)}") # Debug
             return EmailAnalysis(**analysis_result)
         return None
     except Exception as e:
@@ -92,15 +89,15 @@ def sort_emails_and_categorize_external(
         llm_client,
         get_emails_function_from_satan,
         gmail_service_instance,
-        path_emails_file: str,  # Caminho passado por satan5.py
-        path_categorized_json: str  # Caminho passado por satan5.py
+        path_emails_file: str,
+        path_categorized_json: str
 ):
     """Função principal para categorizar e-mails."""
     print(f"Buscando novos e-mails para categorização (para salvar em '{path_emails_file}')...")
     get_emails_function_from_satan(gmail_service_instance, hours=72, target_file=path_emails_file,
                                    query_extras="in:inbox OR in:spam")
 
-    emails_to_process = read_emails_from_file_internal(path_emails_file)  # Usa a função interna de leitura
+    emails_to_process = read_emails_from_file_internal(path_emails_file)
     if not emails_to_process:
         msg = f"Nenhum e-mail encontrado em '{path_emails_file}' para processar."
         print(msg);
@@ -113,23 +110,20 @@ def sort_emails_and_categorize_external(
             continue
         analysis = analyze_email_category(llm_client, email_item)
         if analysis:
-            email_data = {
-                "subject": email_item["subject"], "from": email_item["from"],
-                "received": email_item.get("received", datetime.now().isoformat()),
-                "body": email_item["body"], "analysis": analysis.model_dump(by_alias=True)
-            }
+            email_data = {"subject": email_item["subject"], "from": email_item["from"],
+                          "received": email_item.get("received", datetime.now().isoformat()),
+                          "body": email_item["body"], "analysis": analysis.model_dump(by_alias=True)}
             if analysis.categoria == "sponsorship":
-                sponsorship_emails.append(email_data)  # Usa alias
+                sponsorship_emails.append(email_data)
             elif analysis.categoria == "business_inquiry":
-                business_emails.append(email_data)  # Usa alias
+                business_emails.append(email_data)
             else:
                 other_emails.append(email_data)
-
+    # ... (resto da lógica de sort_emails_and_categorize_external como antes, usando path_categorized_json) ...
     output_data = {"ultima_atualizacao": datetime.now().isoformat(), "emails_patrocinio": sponsorship_emails,
                    "consultas_negocios": business_emails, "outros_emails": other_emails}
     with open(path_categorized_json, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
-
     summary_text = (
         f"\nProcessados {len(emails_to_process)} e-mails para categorização.\nPedidos de patrocínio: {len(sponsorship_emails)}\nConsultas de negócios: {len(business_emails)}\nOutros e-mails: {len(other_emails)}\nResultados detalhados salvos em: {path_categorized_json}")
     print(summary_text);
@@ -138,8 +132,8 @@ def sort_emails_and_categorize_external(
 
 def generate_opportunity_report_external(
         llm_client,
-        categorized_emails_path: str,  # Caminho passado por satan5.py
-        opportunity_report_path: str  # Caminho passado por satan5.py
+        categorized_emails_path: str,
+        opportunity_report_path: str
 ):
     """Gera um relatório estruturado destacando oportunidades de negócios valiosas."""
     try:
@@ -152,6 +146,7 @@ def generate_opportunity_report_external(
     except Exception as e:
         msg = f"Erro ao ler '{categorized_emails_path}': {e}"; print(msg); return msg
 
+    # ... (resto da lógica de generate_opportunity_report_external como antes, usando llm_client e opportunity_report_path) ...
     business_emails = data.get("consultas_negocios", [])
     sponsorship_emails = data.get("emails_patrocinio", [])
     all_relevant_emails = business_emails + sponsorship_emails
@@ -159,25 +154,21 @@ def generate_opportunity_report_external(
         msg = "Nenhum e-mail de negócios ou patrocínio para gerar relatório.";
         print(msg);
         return msg
-
     print("\nAnalisando e-mails para oportunidades com Gemini...")
     email_summaries_for_prompt = []
     for email in all_relevant_emails:
         analysis_data = email.get("analysis", {})
-        summary = {
-            "categoria": analysis_data.get("categoria"), "de": email.get("from", "N/A"),
-            "assunto": email.get("subject", "N/A"), "empresa": analysis_data.get("nome_empresa"),
-            "topico": analysis_data.get("topico_principal"),
-            "confianca_categorizacao": analysis_data.get("confianca"),
-            "trecho_corpo": email.get("body", "")[:300] + "..." if len(email.get("body", "")) > 300 else email.get(
-                "body", "")
-        }
+        summary = {"categoria": analysis_data.get("categoria"), "de": email.get("from", "N/A"),
+                   "assunto": email.get("subject", "N/A"), "empresa": analysis_data.get("nome_empresa"),
+                   "topico": analysis_data.get("topico_principal"),
+                   "confianca_categorizacao": analysis_data.get("confianca"),
+                   "trecho_corpo": email.get("body", "")[:300] + "..." if len(
+                       email.get("body", "")) > 300 else email.get("body", "")}
         email_summaries_for_prompt.append(summary)
-
     prompt_content = f"""
-    Você é um assistente executivo para Junior... (resto do prompt traduzido como antes)...
+    Você é um assistente executivo para Junior... (prompt traduzido como antes)...
     E-mails: {json.dumps(email_summaries_for_prompt, indent=2, ensure_ascii=False)}
-    ... (resto do prompt traduzido como antes)...
+    ... (prompt traduzido como antes)...
     """
     try:
         response_message = llm_client.invoke(prompt_content)
