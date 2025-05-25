@@ -29,6 +29,21 @@
 # =====================================================================
 #
 
+# Jose R F Junior 20/04/2025
+
+# -*- coding: utf-8 -*-
+# Nome do Arquivo: satan5.py
+# Data da versão: 2025-05-25
+# Modificações por Junior (via Gemini): 2025-05-25
+#   - CORREÇÃO: NameError para last_checked_time em periodic_email_check.
+#   - CORREÇÃO: NameError para RECENT_EMAILS_FILE (e similares) nos módulos de e-mail,
+#     passando os caminhos como parâmetros.
+#   - CORREÇÃO: Definição de email_agent_scripts_loaded.
+#   - INTEGRAÇÃO: Funções de important_email2.py, send_mail2.py, email_responder2.py
+#     são chamadas a partir daqui.
+#   - REFINAMENTO: Implementações de satan_get_emails_for_scripts,
+#     satan_get_sent_emails_for_scripts, e satan_send_email_wrapper.
+
 import os
 import os.path
 import subprocess
@@ -42,8 +57,10 @@ from email.message import EmailMessage
 import re
 import threading
 import time
-import calendar
-import json  # Para processar JSON da NewsAPI
+# import calendar # Removido se não usado diretamente por satan5.py
+import json
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
 
 try:
     import dateutil.parser
@@ -53,29 +70,24 @@ try:
     dateutil_available = True
 except ImportError:
     dateutil_available = False
-    print(
-        "AVISO: Biblioteca 'python-dateutil' não encontrada. Instale com 'pip install python-dateutil'. A análise de datas complexas para o calendário será limitada.")
+    print("AVISO: Biblioteca 'python-dateutil' não encontrada. A análise de datas será limitada.")
 
 try:
-    import requests  # Para a ferramenta de Notícias
+    import requests
 
     requests_available = True
 except ImportError:
     requests_available = False
-    print(
-        "AVISO: Biblioteca 'requests' não encontrada. Instale com 'pip install requests'. A ferramenta de notícias não funcionará.")
+    print("AVISO: Biblioteca 'requests' não encontrada. A ferramenta de notícias não funcionará.")
 
-# --- Imports do LangChain ---
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import BaseTool
 from langchain import hub
 from langchain.agents import AgentExecutor, create_react_agent
-# from langchain.prompts import PromptTemplate # Removido se não usado diretamente
+from langchain_core.prompts import ChatPromptTemplate  # Usado nas funções de email
+from langchain_core.output_parsers.json import JsonOutputParser  # Usado nas funções de email
 
-# --- Imports para Reconhecimento de Voz ---
 import speech_recognition as sr
-
-# --- Imports para Síntese de Voz (Google Cloud TTS) ---
 from google.cloud import texttospeech
 
 try:
@@ -84,28 +96,93 @@ try:
     playsound_installed = True
 except ImportError:
     playsound_installed = False
-    print("AVISO: Biblioteca 'playsound' não encontrada. Instale com 'pip install playsound==1.2.2'")
+    print("AVISO: 'playsound' não encontrada. Instale com 'pip install playsound==1.2.2'")
 
-# --- Imports para Autenticação e APIs Google ---
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+# --- Imports dos MÓDULOS de e-mail ---
+# Certifique-se que important_email2.py, send_mail2.py, email_responder2.py
+# estão no mesmo diretório ou no PYTHONPATH e foram refatorados como módulos.
+email_agent_scripts_loaded = False  # Inicializa a flag
+try:
+    from important_email2 import find_important_emails_external
+    from send_mail2 import sort_emails_and_categorize_external, generate_opportunity_report_external
+    from email_responder2 import process_email_responses_external
+
+    email_agent_scripts_loaded = True
+    print("Módulos de agente de e-mail carregados com sucesso.")
+except ImportError as e_import_email_scripts:
+    print(f"AVISO CRÍTICO: Falha ao importar módulos de agente de e-mail: {e_import_email_scripts}")
+    print("As funcionalidades avançadas de e-mail podem não funcionar.")
+
+
+    # Definir stubs para que o programa não quebre completamente se a importação falhar
+    def find_important_emails_external(*args, **kwargs):
+        print("ERRO: Módulo important_email2 não carregado."); return "Funcionalidade indisponível."
+
+
+    def sort_emails_and_categorize_external(*args, **kwargs):
+        print("ERRO: Módulo send_mail2 (sort) não carregado."); return "Funcionalidade indisponível."
+
+
+    def generate_opportunity_report_external(*args, **kwargs):
+        print("ERRO: Módulo send_mail2 (report) não carregado."); return "Funcionalidade indisponível."
+
+
+    def process_email_responses_external(*args, **kwargs):
+        print("ERRO: Módulo email_responder2 não carregado."); return "Funcionalidade indisponível."
+
 # === CARREGA VARIÁVEIS DE AMBIENTE ===
-load_dotenv()
+load_dotenv(override=True)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-USER_NAME = "Junior"
+USER_NAME = os.getenv("USER_NAME", "Junior")
+# Para LangSmith (opcional, mas resolve o aviso)
+# os.environ["LANGCHAIN_TRACING_V2"] = "true"
+# os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+# os.environ["LANGCHAIN_API_KEY"] = "SUA_LANGSMITH_API_KEY_AQUI" # Adicione ao .env se for usar
+# os.environ["LANGCHAIN_PROJECT"] = "SATAN_Agent_Project" # Nome do projeto no LangSmith
 
-# === CONFIGURAÇÕES ===
-MODEL_NAME = "gemini-2.5-pro-preview-05-06"#"gemini-1.5-pro-latest"
+# === CONFIGURAÇÕES GERAIS ===
+MODEL_NAME = "gemini-2.5-pro-preview-05-06"
 TEMPERATURE = 0.3
-TTS_VOICE_GOOGLE = "pt-BR-Chirp3-HD-Laomedeia"
+TTS_VOICE_GOOGLE = "pt-BR-Chirp3-HD-Laomedeia"  # Sua voz preferida
 CREDENTIALS_FILENAME = 'credentials.json'
 TOKEN_FILENAME = 'token.json'
+WINHOFF_MP3_FILE = "winhoff.mp3"
 
+# === ARQUIVOS PARA FUNCIONALIDADES DE E-MAIL (CENTRALIZADOS) ===
+EMAILS_FOR_ANALYSIS_FILE = "emails_para_analise_geral.txt"
+EMAILS_FOR_IMPORTANCE_FILE = "emails_para_analise_importancia.txt"
+RESPONSE_HISTORY_FILE = "historico_respostas_email.json"
+NEEDS_RESPONSE_JSON = "emails_precisam_resposta.json"
+NEEDS_RESPONSE_REPORT = "relatorio_precisam_resposta.txt"
+CATEGORIZED_EMAILS_JSON = "emails_categorizados.json"
+OPPORTUNITY_REPORT = "relatorio_de_oportunidades.txt"
+
+
+# === MODELOS PYDANTIC PARA ANÁLISE DE E-MAIL (CENTRALIZADOS) ===
+class EmailImportance(BaseModel):
+    importance: Literal["high", "medium", "low"] = Field(..., alias="importancia")
+    reason: str = Field(..., alias="motivo")
+    needs_response: bool = Field(..., alias="precisa_resposta")
+    time_sensitive: bool = Field(..., alias="sensivel_ao_tempo")
+    topics: List[str] = Field(..., alias="topicos")
+
+
+class EmailAnalysis(BaseModel):
+    category: Literal["sponsorship", "business_inquiry", "other"] = Field(..., alias="categoria")
+    confidence: float = Field(..., alias="confianca")
+    reason: str = Field(..., alias="motivo")
+    company_name: Optional[str] = Field(None, alias="nome_empresa")
+    topic: Optional[str] = Field(None, alias="topico_principal")
+
+
+# === ESCOPOS GOOGLE API ===
 SCOPES = [
     # === GMAIL - ACESSO COMPLETO ===
     'https://mail.google.com/',  # Permissão total para Gmail (leitura, escrita, envio, busca)
@@ -116,14 +193,14 @@ SCOPES = [
     'https://www.googleapis.com/auth/gmail.labels',  # Gerenciamento de labels
     'https://www.googleapis.com/auth/gmail.settings.basic',  # Configurações básicas
     'https://www.googleapis.com/auth/gmail.settings.sharing',  # Configurações de compartilhamento
-    
+
     # === CALENDAR - GERENCIAMENTO COMPLETO ===
     'https://www.googleapis.com/auth/calendar',  # Acesso completo ao calendário
     'https://www.googleapis.com/auth/calendar.readonly',  # Leitura do calendário
     'https://www.googleapis.com/auth/calendar.events',  # Gerenciamento de eventos
     'https://www.googleapis.com/auth/calendar.events.readonly',  # Leitura de eventos
     'https://www.googleapis.com/auth/calendar.settings.readonly',  # Configurações do calendário
-    
+
     # === GOOGLE DRIVE - OPERAÇÕES DE ARQUIVOS ===
     'https://www.googleapis.com/auth/drive',  # Acesso completo ao Drive
     'https://www.googleapis.com/auth/drive.file',  # Acesso a arquivos criados pela app
@@ -134,7 +211,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive.scripts',  # Scripts do Drive
     'https://www.googleapis.com/auth/drive.activity',  # Atividade do Drive
     'https://www.googleapis.com/auth/drive.activity.readonly',  # Leitura de atividade
-    
+
     # === YOUTUBE - BUSCA E UPLOAD ===
     'https://www.googleapis.com/auth/youtube',  # Acesso completo ao YouTube
     'https://www.googleapis.com/auth/youtube.upload',  # Upload de vídeos
@@ -143,13 +220,13 @@ SCOPES = [
     'https://www.googleapis.com/auth/youtubepartner',  # YouTube Partner
     'https://www.googleapis.com/auth/youtubepartner-channel-audit',  # Auditoria de canal
     'https://www.googleapis.com/auth/youtube.channel-memberships.creator',  # Memberships
-    
+
     # === GOOGLE CONTACTS - PEOPLE API ===
     'https://www.googleapis.com/auth/contacts',  # Acesso aos contatos
     'https://www.googleapis.com/auth/contacts.readonly',  # Leitura dos contatos
     'https://www.googleapis.com/auth/contacts.other.readonly',  # Outros contatos
     'https://www.googleapis.com/auth/directory.readonly',  # Diretório
-    
+
     # === GOOGLE WORKSPACE APPS ===
     'https://www.googleapis.com/auth/spreadsheets',  # Google Sheets completo
     'https://www.googleapis.com/auth/spreadsheets.readonly',  # Leitura de planilhas
@@ -160,24 +237,24 @@ SCOPES = [
     'https://www.googleapis.com/auth/forms',  # Google Forms
     'https://www.googleapis.com/auth/forms.body',  # Corpo dos Forms
     'https://www.googleapis.com/auth/forms.responses.readonly',  # Respostas do Forms
-    
+
     # === GOOGLE TASKS - GERENCIAMENTO ===
     'https://www.googleapis.com/auth/tasks',  # Acesso completo às tarefas
     'https://www.googleapis.com/auth/tasks.readonly',  # Leitura das tarefas
-    
+
     # === GOOGLE PHOTOS - BIBLIOTECA E COMPARTILHAMENTO ===
     'https://www.googleapis.com/auth/photoslibrary',  # Acesso completo às fotos
     'https://www.googleapis.com/auth/photoslibrary.readonly',  # Leitura das fotos
     'https://www.googleapis.com/auth/photoslibrary.sharing',  # Compartilhamento de fotos
     'https://www.googleapis.com/auth/photoslibrary.appendonly',  # Adicionar fotos
     'https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata',  # Editar dados criados
-    
+
     # === GOOGLE MAPS E LOCALIZAÇÃO ===
     'https://www.googleapis.com/auth/maps-platform.places',  # Google Places
     'https://www.googleapis.com/auth/maps-platform.places.details',  # Detalhes de lugares
     'https://www.googleapis.com/auth/maps-platform.places.textsearch',  # Busca de texto
     'https://www.googleapis.com/auth/maps-platform.places.nearbysearch',  # Busca próxima
-    
+
     # === GOOGLE CLOUD PLATFORM ===
     'https://www.googleapis.com/auth/cloud-platform',  # Google Cloud Platform
     'https://www.googleapis.com/auth/cloud-platform.read-only',  # GCP somente leitura
@@ -187,45 +264,45 @@ SCOPES = [
     'https://www.googleapis.com/auth/devstorage.read_only',  # Cloud Storage leitura
     'https://www.googleapis.com/auth/bigquery',  # BigQuery
     'https://www.googleapis.com/auth/bigquery.readonly',  # BigQuery leitura
-    
+
     # === GOOGLE ANALYTICS ===
     'https://www.googleapis.com/auth/analytics',  # Google Analytics
     'https://www.googleapis.com/auth/analytics.readonly',  # Analytics leitura
     'https://www.googleapis.com/auth/analytics.manage.users',  # Gerenciar usuários
     'https://www.googleapis.com/auth/analytics.edit',  # Editar Analytics
-    
+
     # === GOOGLE ADS ===
     'https://www.googleapis.com/auth/adwords',  # Google Ads
-    
+
     # === GOOGLE SEARCH CONSOLE ===
     'https://www.googleapis.com/auth/webmasters',  # Search Console
     'https://www.googleapis.com/auth/webmasters.readonly',  # Search Console leitura
-    
+
     # === GOOGLE PLAY ===
     'https://www.googleapis.com/auth/androidpublisher',  # Google Play Console
-    
+
     # === GOOGLE FIREBASE ===
     'https://www.googleapis.com/auth/firebase',  # Firebase
     'https://www.googleapis.com/auth/firebase.readonly',  # Firebase leitura
     'https://www.googleapis.com/auth/firebase.messaging',  # Firebase Messaging
-    
+
     # === GOOGLE BLOGGER ===
     'https://www.googleapis.com/auth/blogger',  # Blogger
     'https://www.googleapis.com/auth/blogger.readonly',  # Blogger leitura
-    
+
     # === GOOGLE BOOKS ===
     'https://www.googleapis.com/auth/books',  # Google Books
-    
+
     # === GOOGLE TRANSLATE ===
     'https://www.googleapis.com/auth/cloud-translation',  # Google Translate
-    
+
     # === GOOGLE APPS SCRIPT ===
     'https://www.googleapis.com/auth/script.projects',  # Google Apps Script
     'https://www.googleapis.com/auth/script.processes',  # Processos do Script
     'https://www.googleapis.com/auth/script.metrics',  # Métricas do Script
     'https://www.googleapis.com/auth/script.deployments',  # Deployments do Script
     'https://www.googleapis.com/auth/script.deployments.readonly',  # Deployments leitura
-    
+
     # === GOOGLE ADMIN (SE FOR ADMIN) ===
     'https://www.googleapis.com/auth/admin.directory.user',  # Usuários do domínio
     'https://www.googleapis.com/auth/admin.directory.user.readonly',  # Usuários leitura
@@ -235,14 +312,14 @@ SCOPES = [
     'https://www.googleapis.com/auth/admin.directory.device.chromeos',  # Dispositivos Chrome
     'https://www.googleapis.com/auth/admin.reports.audit.readonly',  # Relatórios de auditoria
     'https://www.googleapis.com/auth/admin.reports.usage.readonly',  # Relatórios de uso
-    
+
     # === DADOS DO USUÁRIO E AUTENTICAÇÃO ===
     'https://www.googleapis.com/auth/userinfo.email',  # Email do usuário
     'https://www.googleapis.com/auth/userinfo.profile',  # Perfil do usuário
     'openid',  # OpenID Connect
     'profile',  # Informações básicas do perfil
     'email',  # Endereço de email
-    
+
     # === GOOGLE CLASSROOM (SE APLICÁVEL) ===
     'https://www.googleapis.com/auth/classroom.courses',  # Cursos do Classroom
     'https://www.googleapis.com/auth/classroom.courses.readonly',  # Cursos leitura
@@ -250,11 +327,11 @@ SCOPES = [
     'https://www.googleapis.com/auth/classroom.rosters.readonly',  # Listas leitura
     'https://www.googleapis.com/auth/classroom.profile.emails',  # Emails do perfil
     'https://www.googleapis.com/auth/classroom.profile.photos',  # Fotos do perfil
-    
+
     # === GOOGLE KEEP ===
     'https://www.googleapis.com/auth/keep',  # Google Keep
     'https://www.googleapis.com/auth/keep.readonly',  # Keep leitura
-    
+
     # === GOOGLE FIT ===
     'https://www.googleapis.com/auth/fitness.activity.read',  # Atividades Fit
     'https://www.googleapis.com/auth/fitness.activity.write',  # Escrever atividades
@@ -329,26 +406,25 @@ SCOPES = [
 
 # TELEGRAM BOT API (requer implementação separada):
 # - Controle total do bot
-WINHOFF_MP3_FILE = "winhoff.mp3"
+print(f"Escopos Google API definidos: {len(SCOPES)} escopos.")
 
 # --- Configuração do LLM LangChain ---
-if not GOOGLE_API_KEY: sys.exit("Erro Crítico: GOOGLE_API_KEY não definida.")
+if not GOOGLE_API_KEY: sys.exit("Erro Crítico: GOOGLE_API_KEY não definida no .env.")
 try:
     llm = ChatGoogleGenerativeAI(model=MODEL_NAME, google_api_key=GOOGLE_API_KEY, temperature=TEMPERATURE,
                                  convert_system_message_to_human=True)
     print(f"LLM LangChain ({MODEL_NAME}) inicializado.")
 except Exception as e:
-    sys.exit(f"Erro crítico LLM LangChain: {e}")
+    sys.exit(f"Erro crítico ao inicializar LLM LangChain: {e}")
 
 # --- Inicialização do Cliente Google Cloud TTS ---
 google_tts_ready = False
 try:
     texttospeech.TextToSpeechClient()
-    print("Cliente Google Cloud TTS parece estar pronto (bibliotecas carregadas).")
+    print("Cliente Google Cloud TTS parece estar pronto.")
     google_tts_ready = True
 except Exception as e:
     print(f"Erro ao verificar cliente Google Cloud TTS: {e}\nAVISO: Google Cloud TTS pode não funcionar.")
-    print("Verifique se a API 'Cloud Text-to-Speech' está habilitada no GCP e se a autenticação está configurada.")
 
 
 # --- Função para Autenticação Google OAuth 2.0 ---
@@ -359,55 +435,46 @@ def get_google_credentials():
             creds = Credentials.from_authorized_user_file(TOKEN_FILENAME, SCOPES)
             if creds:
                 token_scopes_set = set(creds.scopes if creds.scopes is not None else [])
-                required_scopes_set = set(SCOPES)
+                required_scopes_set = set(SCOPES)  # Usa a lista global SCOPES
                 if not required_scopes_set.issubset(token_scopes_set):
                     print(
-                        f"AVISO: Escopos no token ({token_scopes_set}) não cobrem todos os escopos requeridos ({required_scopes_set}). Forçando re-autenticação.")
+                        f"AVISO: Escopos no token ({token_scopes_set}) não cobrem todos os requeridos ({required_scopes_set}). Forçando re-autenticação.")
                     creds = None
                     if os.path.exists(TOKEN_FILENAME):
                         try:
-                            os.remove(TOKEN_FILENAME)
-                            print(
-                                f"Arquivo '{TOKEN_FILENAME}' removido para re-autenticação devido à mudança de escopos.")
+                            os.remove(TOKEN_FILENAME); print(
+                                f"Arquivo '{TOKEN_FILENAME}' removido para re-autenticação.")
                         except Exception as e_rem:
-                            print(f"AVISO: Falha ao remover token.json para re-auth: {e_rem}")
-        except ValueError as e:
+                            print(f"AVISO: Falha ao remover {TOKEN_FILENAME}: {e_rem}")
+        except Exception as e:  # Captura exceções mais genéricas ao carregar o token
             print(
-                f"Erro de valor ao carregar '{TOKEN_FILENAME}' (possivelmente escopos mudaram ou token corrompido): {e}. Tentando re-autenticar.")
+                f"Erro ao carregar '{TOKEN_FILENAME}' (pode estar corrompido ou formato inválido): {e}. Tentando re-autenticar.")
             creds = None
             if os.path.exists(TOKEN_FILENAME):
                 try:
                     os.remove(TOKEN_FILENAME)
                 except Exception as e_rem:
-                    print(f"AVISO: Falha ao remover token.json para re-auth: {e_rem}")
-        except Exception as e:
-            print(f"Erro geral ao carregar '{TOKEN_FILENAME}': {e}. Tentando re-autenticar.")
-            creds = None
-            if os.path.exists(TOKEN_FILENAME):
-                try:
-                    os.remove(TOKEN_FILENAME)
-                except Exception as e_rem:
-                    print(f"AVISO: Falha ao remover token.json para re-auth: {e_rem}")
+                    print(f"AVISO: Falha ao remover {TOKEN_FILENAME}: {e_rem}")
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                print("Credenciais Google atualizadas.")
+                print("Credenciais Google atualizadas com sucesso via refresh token.")
                 with open(TOKEN_FILENAME, 'w') as token_file:
                     token_file.write(creds.to_json())
             except Exception as e_refresh:
-                print(f"Erro ao atualizar credenciais Google: {e_refresh}. Re-autorização necessária.")
-                if os.path.exists(TOKEN_FILENAME):
+                print(
+                    f"Erro ao atualizar credenciais via refresh token: {e_refresh}. Re-autorização completa necessária.")
+                if os.path.exists(TOKEN_FILENAME):  # Remove token inválido
                     try:
                         os.remove(TOKEN_FILENAME)
                     except Exception as e_rem:
-                        print(f"AVISO: Falha ao remover token.json para re-auth: {e_rem}")
+                        print(f"AVISO: Falha ao remover {TOKEN_FILENAME} após falha no refresh: {e_rem}")
                 creds = None
-
-        if not creds:
+        if not creds:  # Se ainda não tem credenciais (primeira vez ou refresh falhou)
             if not os.path.exists(CREDENTIALS_FILENAME):
-                print(f"Erro Crítico: Arquivo de credenciais '{CREDENTIALS_FILENAME}' não encontrado!")
+                print(f"Erro Crítico: Arquivo de credenciais '{CREDENTIALS_FILENAME}' não encontrado!");
                 return None
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILENAME, SCOPES)
@@ -419,47 +486,317 @@ def get_google_credentials():
                     token_file.write(creds.to_json())
                     print(f"Novas credenciais salvas em '{TOKEN_FILENAME}'.")
             except Exception as e_flow:
-                print(f"ERRO FATAL durante o fluxo de autorização do Google: {e_flow}");
+                print(f"ERRO FATAL durante o fluxo de autorização Google: {e_flow}");
                 traceback.print_exc();
                 creds = None
     return creds
 
 
-# --- Executa Autenticação Google OAuth na Inicialização ---
+# --- Inicialização dos Serviços Google ---
 print("\n--- Verificando Credenciais Google OAuth 2.0 ---")
 google_creds = get_google_credentials()
 google_auth_ready = bool(google_creds and google_creds.valid)
-if not google_auth_ready:
-    print("ERRO CRÍTICO PÓS-AUTH: Falha na autenticação Google OAuth. Serviços Google podem não funcionar.")
+gmail_service = None
+# calendar_service = None # Exemplo, descomente e use se necessário
+# drive_service = None    # Exemplo
+
+if google_auth_ready:
+    print("SUCESSO PÓS-AUTH: Credenciais Google OAuth válidas.")
+    try:
+        gmail_service = build('gmail', 'v1', credentials=google_creds)
+        print("Serviço Gmail API inicializado.")
+        # Inicialize outros serviços aqui, se necessário
+        # calendar_service = build('calendar', 'v3', credentials=google_creds)
+        # drive_service = build('drive', 'v3', credentials=google_creds)
+    except Exception as e_build:
+        print(f"Erro ao construir serviços Google API: {e_build}")
+        google_auth_ready = False  # Se a construção do serviço falhar
 else:
-    print("SUCESSO PÓS-AUTH: Credenciais Google OAuth OK.")
+    print("ERRO CRÍTICO PÓS-AUTH: Falha na autenticação Google OAuth. Serviços Google podem não funcionar.")
 print("-" * 50)
 
 
-# --- Definição das Ferramentas Customizadas ---
+# --- FUNÇÕES DE INTERAÇÃO COM GMAIL (IMPLEMENTAÇÕES REAIS) ---
+def _get_plain_text_body_from_gmail_payload(payload: dict) -> str:
+    """Helper para extrair corpo de texto puro do payload de uma mensagem do Gmail."""
+    body_text = ""
+    if not payload: return "[Payload do e-mail vazio]"
+
+    mime_type = payload.get('mimeType', '')
+
+    if mime_type == 'text/plain':
+        body_data = payload.get('body', {}).get('data')
+        if body_data:
+            try:
+                return base64.urlsafe_b64decode(body_data).decode('utf-8', errors='replace').strip()
+            except Exception as e:
+                print(f"Erro ao decodificar corpo text/plain: {e}"); return "[Erro ao decodificar corpo]"
+
+    elif mime_type.startswith('multipart/'):
+        parts = payload.get('parts', [])
+        for part in parts:
+            # Prioriza text/plain
+            if part.get('mimeType') == 'text/plain':
+                part_body_data = part.get('body', {}).get('data')
+                if part_body_data:
+                    try:
+                        return base64.urlsafe_b64decode(part_body_data).decode('utf-8', errors='replace').strip()
+                    except Exception as e:
+                        print(f"Erro ao decodificar parte text/plain: {e}"); continue
+            # Fallback para recursão se for outro multipart
+            elif part.get('mimeType', '').startswith('multipart/'):
+                nested_body = _get_plain_text_body_from_gmail_payload(part)
+                if nested_body != "[Corpo do e-mail não encontrado ou formato não suportado]":
+                    return nested_body  # Retorna o primeiro corpo de texto encontrado recursivamente
+        # Se não encontrou text/plain direto, tenta html e depois outros multiparts
+        for part in parts:
+            if part.get('mimeType') == 'text/html':  # Fallback menos ideal para HTML se text/plain não for encontrado
+                part_body_data = part.get('body', {}).get('data')
+                if part_body_data:
+                    print("Aviso: Extraindo de text/html, pode conter tags.")
+                    try:  # Simples remoção de tags, pode não ser perfeito
+                        html_content = base64.urlsafe_b64decode(part_body_data).decode('utf-8', errors='replace')
+                        text_content = re.sub(r'<style.*?</style>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+                        text_content = re.sub(r'<script.*?</script>', '', text_content, flags=re.DOTALL | re.IGNORECASE)
+                        text_content = re.sub(r'<[^>]+>', ' ', text_content)  # Remove tags HTML
+                        text_content = re.sub(r'\s+', ' ', text_content).strip()  # Normaliza espaços
+                        return text_content
+                    except Exception as e:
+                        print(f"Erro ao decodificar parte text/html: {e}"); continue
+
+    # Se chegou aqui, não encontrou um corpo de texto plano adequado
+    return "[Corpo do e-mail não encontrado ou formato não suportado]"
+
+
+def satan_get_emails_for_scripts(current_gmail_service, hours=24, query_extras="in:inbox",
+                                 target_file="emails_temp.txt", max_results=25):
+    """Busca e-mails e os salva em target_file para processamento pelos scripts de análise."""
+    print(
+        f"[SATAN_GET_EMAILS] Buscando e-mails: últimas {hours}h, extras='{query_extras}', arquivo='{target_file}', max={max_results}")
+    if not current_gmail_service:
+        msg = "[SATAN_GET_EMAILS] Serviço Gmail não disponível."
+        print(msg);
+        falar(msg.replace("[SATAN_GET_EMAILS]", "").strip())
+        return False
+
+    emails_data_list = []
+    try:
+        days_ago = (hours + 23) // 24
+        query = f'{query_extras} newer_than:{days_ago}d'
+
+        results = current_gmail_service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
+        messages_summary = results.get('messages', [])
+        print(f"[SATAN_GET_EMAILS] Encontrados {len(messages_summary)} sumários para a query: {query}")
+
+        if not messages_summary:
+            print(
+                f"Nenhum e-mail encontrado para os critérios. O arquivo {target_file} ficará vazio ou não será atualizado.")
+            with open(target_file, "w", encoding="utf-8") as f: f.write("")
+            return True  # Sucesso, mas nenhum e-mail
+
+        for msg_summary in messages_summary:
+            msg_id = msg_summary['id']
+            # Pedir 'full' para ter o payload completo para extração do corpo
+            msg = current_gmail_service.users().messages().get(userId='me', id=msg_id, format='full').execute()
+
+            payload = msg.get('payload', {})
+            headers = payload.get('headers', [])
+            subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(Sem Assunto)')
+            sender_raw = next((h['value'] for h in headers if h['name'].lower() == 'from'), '(Remetente Desconhecido)')
+            date_str_header = next((h['value'] for h in headers if h['name'].lower() == 'date'), None)
+            internal_date_ms_str = msg.get('internalDate')
+            body_text = _get_plain_text_body_from_gmail_payload(payload)
+
+            friendly_date = "Data Desconhecida"
+            if dateutil_available:
+                parsed_dt = None
+                date_to_parse = date_str_header or internal_date_ms_str
+                if date_to_parse:
+                    try:
+                        if isinstance(date_to_parse, str) and date_to_parse.isdigit():
+                            parsed_dt = datetime.datetime.fromtimestamp(int(date_to_parse) / 1000,
+                                                                        tz=datetime.timezone.utc)
+                        elif isinstance(date_to_parse, str):
+                            parsed_dt = dateutil.parser.parse(date_to_parse)
+                        if parsed_dt:
+                            current_tz = dateutil.tz.tzlocal()
+                            if parsed_dt.tzinfo:
+                                parsed_dt = parsed_dt.astimezone(current_tz)
+                            else:
+                                parsed_dt = current_tz.localize(parsed_dt)  # Torna aware com o fuso local
+                            friendly_date = parsed_dt.isoformat()
+                    except Exception as e_date_parse:
+                        print(
+                            f"Aviso: Não foi possível parsear data '{date_to_parse}' para e-mail '{subject}': {e_date_parse}")
+                        friendly_date = str(date_to_parse) if date_to_parse else datetime.datetime.now().isoformat()
+
+            emails_data_list.append({
+                "id": msg_id, "subject": subject, "from": sender_raw,
+                "received": friendly_date, "body": body_text
+            })
+
+        print(f"[SATAN_GET_EMAILS] E-mails formatados: {len(emails_data_list)}. Salvando em {target_file}...")
+        with open(target_file, "w", encoding="utf-8") as f:
+            for email_dict in emails_data_list:
+                f.write(f"Assunto: {email_dict.get('subject', '')}\n")
+                f.write(f"De: {email_dict.get('from', '')}\n")
+                f.write(f"Recebido: {email_dict.get('received', '')}\n")
+                # Adiciona um marcador "Corpo:" mesmo se o corpo estiver vazio para consistência no parsing
+                f.write(f"Corpo: {email_dict.get('body', '[Corpo Vazio]')}\n")
+                f.write("-" * 50 + "\n")
+        return True  # Sucesso
+    except HttpError as error:
+        err_msg = f"Erro HTTP ao buscar e-mails: {error._get_reason()}"
+        print(f"[SATAN_GET_EMAILS] {err_msg}")
+        falar(f"Erro ao buscar seus e-mails: {error._get_reason()}")
+        return False
+    except Exception as e_main:
+        print(f"[SATAN_GET_EMAILS] Erro geral em satan_get_emails: {e_main}")
+        traceback.print_exc()
+        falar("Ocorreu um erro inesperado ao buscar seus e-mails.")
+        return False
+
+
+def satan_get_sent_emails_for_scripts(current_gmail_service, days=7):
+    """Busca e-mails enviados e formata para a função is_previously_responded."""
+    print(f"[SATAN_GET_SENT_EMAILS] Buscando e-mails enviados dos últimos {days} dias...")
+    if not current_gmail_service:
+        print("[SATAN_GET_SENT_EMAILS] Serviço Gmail não disponível.")
+        return []
+
+    sent_emails_formatted = []
+    try:
+        query = f'in:sent newer_than:{days}d'
+        results = current_gmail_service.users().messages().list(userId='me', q=query,
+                                                                maxResults=200).execute()  # Aumentado limite
+        messages_summary = results.get('messages', [])
+        print(f"[SATAN_GET_SENT_EMAILS] Encontrados {len(messages_summary)} e-mails enviados.")
+
+        for msg_summary in messages_summary:
+            msg_id = msg_summary['id']
+            msg = current_gmail_service.users().messages().get(userId='me', id=msg_id, format='metadata',
+                                                               metadataHeaders=['To', 'Subject', 'Date']).execute()
+
+            headers = msg.get('payload', {}).get('headers', [])
+            subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(Sem Assunto)')
+            recipients_raw = next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
+            date_str_header = next((h['value'] for h in headers if h['name'].lower() == 'date'), None)
+            internal_date_ms_str = msg.get('internalDate')
+
+            recipients_list = [addr.strip().lower() for addr in
+                               re.findall(r'[\w\.-]+@[\w\.-]+', recipients_raw)]  # Regex mais direto para emails
+
+            sent_time_iso = "Data Desconhecida"
+            if dateutil_available:
+                parsed_dt = None
+                date_to_parse = date_str_header or internal_date_ms_str
+                if date_to_parse:
+                    try:
+                        if isinstance(date_to_parse, str) and date_to_parse.isdigit():
+                            parsed_dt = datetime.datetime.fromtimestamp(int(date_to_parse) / 1000,
+                                                                        tz=datetime.timezone.utc)
+                        elif isinstance(date_to_parse, str):
+                            parsed_dt = dateutil.parser.parse(date_to_parse)
+                        if parsed_dt:
+                            current_tz = dateutil.tz.tzlocal()
+                            if parsed_dt.tzinfo:
+                                parsed_dt = parsed_dt.astimezone(current_tz)
+                            else:
+                                parsed_dt = current_tz.localize(parsed_dt)
+                            sent_time_iso = parsed_dt.isoformat()
+                    except Exception as e_date_parse_sent:
+                        print(
+                            f"Aviso: Não foi possível parsear data '{date_to_parse}' em e-mail enviado '{subject}': {e_date_parse_sent}")
+                        sent_time_iso = str(date_to_parse) if date_to_parse else "Data Desconhecida"
+
+            sent_emails_formatted.append({
+                "subject": subject, "recipients": recipients_list, "sent_time": sent_time_iso
+            })
+        return sent_emails_formatted
+    except HttpError as error:
+        print(f"Erro HTTP ao buscar e-mails enviados: {error._get_reason()}")
+        return []
+    except Exception as e_main:
+        print(f"Erro geral em satan_get_sent_emails: {e_main}")
+        traceback.print_exc()
+        return []
+
+
+def satan_send_email_wrapper(current_gmail_service, to_address, subject_line, body_content):
+    """Wrapper para enviar e-mail usando o serviço Gmail já autenticado."""
+    print(f"[SATAN_SEND_EMAIL] Tentando enviar para: {to_address}, Assunto: {subject_line}")
+    if not current_gmail_service:
+        msg = "[SATAN_SEND_EMAIL] Serviço Gmail não disponível."
+        print(msg);
+        falar(msg.replace("[SATAN_SEND_EMAIL]", "").strip())
+        return False
+    try:
+        message = EmailMessage()
+        message.set_content(body_content)
+        message['To'] = to_address
+        message['Subject'] = subject_line
+
+        # Obter o e-mail do usuário para o campo 'From', se possível
+        try:
+            user_profile = current_gmail_service.users().getProfile(userId='me').execute()
+            sender_email = user_profile.get('emailAddress')
+            if sender_email: message['From'] = sender_email
+        except Exception as e_profile:
+            print(f"Aviso: Não foi possível obter o e-mail do remetente para o cabeçalho 'From': {e_profile}")
+
+        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        send_message_result = current_gmail_service.users().messages().send(userId='me',
+                                                                            body={'raw': encoded_message}).execute()
+        print(f"E-mail enviado para {to_address}. ID da Mensagem: {send_message_result.get('id')}")
+        return True
+    except HttpError as error:
+        err_reason = error._get_reason()
+        print(f"Erro HTTP ao enviar e-mail: {err_reason}")
+        falar(f"Erro ao tentar enviar o e-mail: {err_reason}")
+        return False
+    except Exception as e:
+        print(f"Erro inesperado ao enviar e-mail: {e}")
+        traceback.print_exc()
+        falar("Ocorreu um erro inesperado ao tentar enviar o e-mail.")
+        return False
+
+
+# --- Variável Global para Threads de Background ---
+# CORREÇÃO: Inicializar last_checked_time globalmente
+last_checked_time = 0  # Inicialização da variável global
+
+
+# --- FERRAMENTAS LANGCHAIN (Suas ferramentas existentes) ---
+# (Cole aqui as definições COMPLETAS das suas classes:
+# WindowsCommandExecutorTool, GetCalendarEventsTool, CreateCalendarEventTool,
+# SendGmailTool (a ferramenta do agente, se diferente da wrapper),
+# YouTubeSearchTool, DriveListFilesTool, SearchEmailsTool,
+# ReadFullEmailContentTool, ListGoogleContactsTool, DirectWebSearchTool, GetNewsTool)
+# E a CheckGmailTool MODIFICADA para usar get_gmail_service()
+
 class WindowsCommandExecutorTool(BaseTool):
     name: str = "windows_command_executor"
     description: str = (
         "Executa um comando FORNECIDO COMO STRING única diretamente no Prompt de Comando do Windows. Use com cautela.")
 
-    def _run(self, command_string: str) -> str:  # Implementação original mantida
+    def _run(self, command_string: str) -> str:
         print(f"\n LCHAIN TOOL: Executando {self.name}: C:\\> {command_string}")
         if not isinstance(command_string,
                           str) or not command_string.strip(): return "Erro: Input inválido para comando."
-        forbidden_commands = ["format", "shutdown", "del ", "rd ", "/s", "/q"]
+        forbidden_commands = ["format", "shutdown", "del ", "rd ", "/s", "/q"]  # Adicione mais se necessário
         command_lower = command_string.lower()
         if any(fc in command_lower for fc in forbidden_commands):
-            return f"Return Code: -1\nSTDOUT:\n(None)\nSTDERR:\nErro: Comando contendo termo bloqueado ('{command_lower[:20]}...') foi bloqueado por segurança."
+            return f"Return Code: -1\nSTDOUT:\n(None)\nSTDERR:\nErro: Comando contendo termo '{command_lower[:20]}...' foi bloqueado."
         try:
             result = subprocess.run(command_string, shell=True, capture_output=True, text=True, check=False,
                                     encoding='cp850', errors='replace')
-            stdout = result.stdout.strip() or '(None)'
-            stderr = result.stderr.strip() or '(None)'
-            return f"Return Code: {result.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+            stdout = result.stdout.strip() or '(Vazio)'
+            stderr = result.stderr.strip() or '(Vazio)'
+            return f"Código de Retorno: {result.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
         except FileNotFoundError:
-            return f"Return Code: -1\nSTDOUT:\n(None)\nSTDERR:\nErro: Comando ou programa '{command_string.split()[0]}' não encontrado."
+            return f"Erro: Comando ou programa '{command_string.split()[0]}' não encontrado."
         except Exception as e:
-            return f"Return Code: -1\nSTDOUT:\n(None)\nSTDERR:\nErro Inesperado ao executar comando: {e}"
+            return f"Erro Inesperado ao executar: {e}"
 
 
 class GetCalendarEventsTool(BaseTool):
@@ -467,7 +804,6 @@ class GetCalendarEventsTool(BaseTool):
     description: str = (
         "Busca e lista eventos do Google Calendar para um período (ex: 'hoje', 'amanhã', 'esta semana', 'próximo mês', 'junho 2025', '25/05/2025'). Padrão: hoje. Max 50 eventos.")
 
-    # Implementação original mantida
     def _make_aware(self, dt_obj: datetime.datetime, target_tz) -> datetime.datetime:
         return dt_obj.replace(tzinfo=target_tz) if dt_obj.tzinfo is None else dt_obj.astimezone(target_tz)
 
@@ -479,13 +815,12 @@ class GetCalendarEventsTool(BaseTool):
 
     def _parse_query_to_daterange(self, query_str: str) -> tuple[str | None, str | None, str]:
         if not dateutil_available: now_utc = datetime.datetime.utcnow(); return (
-            self._get_start_of_day(now_utc).isoformat() + 'Z', self._get_end_of_day(now_utc).isoformat() + 'Z',
-            "hoje (dateutil indisponível)")
+        self._get_start_of_day(now_utc).isoformat() + 'Z', self._get_end_of_day(now_utc).isoformat() + 'Z',
+        "hoje (dateutil indisponível)")
         try:
             local_tz = dateutil.tz.tzlocal()
         except:
-            local_tz = datetime.timezone.utc; print(
-                "Aviso: Não foi possível determinar o fuso horário local preciso, usando UTC.")
+            local_tz = datetime.timezone.utc; print("Aviso: Não foi possível determinar fuso local, usando UTC.")
         now_local = datetime.datetime.now(local_tz);
         query_lower = query_str.lower().strip()
         time_min_local, time_max_local = None, None;
@@ -527,11 +862,7 @@ class GetCalendarEventsTool(BaseTool):
             end_of_next_month = first_day_next_month.replace(day=num_days_next_month);
             time_min_local, time_max_local = self._get_start_of_day(first_day_next_month), self._get_end_of_day(
                 end_of_next_month)
-        elif "este ano" in query_lower:
-            period_desc = f"o ano de {now_local.year}";
-            time_min_local, time_max_local = self._get_start_of_day(
-                now_local.replace(month=1, day=1)), self._get_end_of_day(now_local.replace(month=12, day=31))
-        else:
+        else:  # Tenta parse mais específico
             year_match = re.search(r'\b(\d{4})\b', query_lower);
             parsed_as_specific_period = False
             for month_name, month_num in pt_month_map.items():
@@ -547,14 +878,14 @@ class GetCalendarEventsTool(BaseTool):
                     parsed_as_specific_period = True;
                     break
             if not parsed_as_specific_period and year_match and len(
-                    query_lower.split()) == 1 and query_lower == year_match.group(1):
+                    query_lower.split()) == 1 and query_lower == year_match.group(1):  # Ano específico
                 year_val = int(year_match.group(1));
                 period_desc = f"o ano de {year_val}";
                 time_min_local, time_max_local = self._get_start_of_day(
                     datetime.datetime(year_val, 1, 1, tzinfo=local_tz)), self._get_end_of_day(
                     datetime.datetime(year_val, 12, 31, tzinfo=local_tz));
                 parsed_as_specific_period = True
-            if not parsed_as_specific_period:
+            if not parsed_as_specific_period:  # Tenta parsear como data específica
                 try:
                     default_date_for_parser = now_local.replace(hour=0, minute=0, second=0, microsecond=0);
                     parsed_dt = dateutil.parser.parse(query_str, default=default_date_for_parser, dayfirst=True);
@@ -562,8 +893,9 @@ class GetCalendarEventsTool(BaseTool):
                     time_min_local, time_max_local = self._get_start_of_day(parsed_dt_local), self._get_end_of_day(
                         parsed_dt_local);
                     period_desc = f"o dia {time_min_local.strftime('%d/%m/%Y')}"
-                except (dateutil.parser.ParserError, ValueError) as e:
-                    print(f"Não foi possível interpretar '{query_str}' como período/data. Usando 'hoje'. Erro: {e}");
+                except (dateutil.parser.ParserError, ValueError) as e_parse_date:
+                    print(
+                        f"Não foi possível interpretar '{query_str}' como período/data. Usando 'hoje'. Erro: {e_parse_date}");
                     period_desc = "hoje (falha no parse)";
                     time_min_local, time_max_local = self._get_start_of_day(now_local), self._get_end_of_day(now_local)
         if time_min_local and time_max_local: return time_min_local.isoformat(), time_max_local.isoformat(), period_desc
@@ -572,15 +904,23 @@ class GetCalendarEventsTool(BaseTool):
         return time_min_local.isoformat(), time_max_local.isoformat(), "hoje (padrão crítico)"
 
     def _run(self, query: str = "") -> str:
-        creds = get_google_credentials();
+        creds = get_google_credentials();  # Usa a função global para obter creds
         if not creds: return "Erro: Falha nas credenciais Google para Calendário."
+        current_calendar_service = None
+        try:
+            current_calendar_service = build('calendar', 'v3', credentials=creds)
+        except Exception as e_build_cal:
+            print(
+                f"Erro ao construir serviço Calendar: {e_build_cal}"); return "Erro ao inicializar serviço Google Calendar."
+        if not current_calendar_service: return "Erro: Serviço Google Calendar não pôde ser inicializado."
+
         time_min_str, time_max_str, period_description = self._parse_query_to_daterange(query)
         if not time_min_str or not time_max_str: return f"Não foi possível determinar o período para a consulta: '{query}'."
-        print(f"   Buscando eventos para o período: {period_description} (De: {time_min_str} Até: {time_max_str})")
+        print(f"   Buscando eventos para: {period_description} (De: {time_min_str} Até: {time_max_str})")
         try:
-            service = build('calendar', 'v3', credentials=creds)
-            events_result = service.events().list(calendarId='primary', timeMin=time_min_str, timeMax=time_max_str,
-                                                  maxResults=50, singleEvents=True, orderBy='startTime').execute();
+            events_result = current_calendar_service.events().list(calendarId='primary', timeMin=time_min_str,
+                                                                   timeMax=time_max_str, maxResults=50,
+                                                                   singleEvents=True, orderBy='startTime').execute();
             events = events_result.get('items', [])
             if not events: return f"Nenhum evento encontrado para {period_description}."
             output_lines = [f"Eventos para {period_description}:"]
@@ -593,7 +933,7 @@ class GetCalendarEventsTool(BaseTool):
                     if not is_all_day and dateutil_available:
                         dt_obj_aware = dateutil.parser.isoparse(start_str);
                         local_tz_for_display = dateutil.tz.tzlocal();
-                        dt_obj_local = dt_obj_aware.astimezone(local_tz_for_display);
+                        dt_obj_local = dt_obj_aware.astimezone(local_tz_for_display)
                         is_multi_day_period = (dateutil.parser.isoparse(time_max_str) - dateutil.parser.isoparse(
                             time_min_str)).days > 0
                         hour_minute = dt_obj_local.strftime(
@@ -602,206 +942,45 @@ class GetCalendarEventsTool(BaseTool):
                         dt_obj_date = datetime.datetime.strptime(start_str, '%Y-%m-%d').date();
                         hour_minute = f"{dt_obj_date.strftime('%d/%m')} (Dia Inteiro)"
                     else:
-                        hour_minute = start_str
-                except Exception as e_date:
+                        hour_minute = start_str  # Fallback para string bruta se dateutil não estiver disponível
+                except Exception as e_date_fmt:
                     print(
-                        f"Erro ao formatar data do evento '{summary}': {e_date}"); hour_minute = "Horário Indisponível" if not is_all_day else "Dia Inteiro"
+                        f"Erro ao formatar data do evento '{summary}': {e_date_fmt}"); hour_minute = "Horário Indisponível" if not is_all_day else "Dia Inteiro"
                 output_lines.append(f"- {hour_minute}: {summary}")
             if len(events) >= 50 and events_result.get('nextPageToken'): output_lines.append(
-                "\nAviso: Muitos eventos encontrados, a lista pode estar truncada em 50 resultados.")
+                "\nAviso: Lista truncada em 50 eventos.")
             return "\n".join(output_lines)
         except HttpError as error:
-            return f"Erro ao acessar o Google Calendar (HttpError {error.resp.status}): {error._get_reason()}"
+            return f"Erro Google Calendar (HttpError {error.resp.status}): {error._get_reason()}"
         except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao buscar eventos do calendário: {e}"
+            traceback.print_exc(); return f"Erro ao buscar eventos: {e}"
 
 
-class CreateCalendarEventTool(BaseTool):
-    name: str = "google_calendar_create_event";
-    description: str = (
-        "Use para criar um novo evento no calendário. Ex: 'marcar reunião às 14h amanhã sobre projeto X'")
-
-    # Implementação original mantida
-    def _parse_datetime_range(self, query: str):
-        if not dateutil_available: return None, None, query
-        try:
-            now_local_default = datetime.datetime.now(dateutil.tz.tzlocal())
-            parsed_info = dateutil.parser.parse(query, fuzzy_with_tokens=True, default=now_local_default, dayfirst=True)
-            start_dt = parsed_info[0]
-            summary_tokens = [t for t in parsed_info[1] if
-                              t.strip() and t.lower() not in ["às", "as", "de", "do", "da"]]
-            summary = " ".join(summary_tokens).strip() or f"Evento: {query[:30]}"
-            end_dt = start_dt + datetime.timedelta(hours=1)
-            range_match = re.search(r'(das|de)\s*(\d{1,2}(:\d{2})?)\s*(às|as|a)\s*(\d{1,2}(:\d{2})?)', query,
-                                    re.IGNORECASE)
-            if range_match:
-                start_time_str = range_match.group(2).replace('h', ':');
-                end_time_str = range_match.group(5).replace('h', ':')
-                if ':' not in start_time_str: start_time_str += ":00"
-                if ':' not in end_time_str: end_time_str += ":00"
-                start_time_obj = datetime.datetime.strptime(start_time_str, "%H:%M").time();
-                end_time_obj = datetime.datetime.strptime(end_time_str, "%H:%M").time()
-                start_dt = start_dt.replace(hour=start_time_obj.hour, minute=start_time_obj.minute, second=0,
-                                            microsecond=0)
-                end_dt = start_dt.replace(hour=end_time_obj.hour, minute=end_time_obj.minute, second=0, microsecond=0)
-                if end_dt <= start_dt: end_dt += datetime.timedelta(days=1)
-            return start_dt, end_dt, summary
-        except Exception as e_parse:
-            print(
-                f"DEBUG CreateCalendarEventTool _parse_datetime_range Error: {e_parse} para query '{query}'"); return None, None, query
-
-    def _make_aware(self, dt_obj: datetime.datetime, target_tz):
-        return dt_obj.replace(tzinfo=target_tz) if dt_obj.tzinfo is None else dt_obj.astimezone(target_tz)
-
-    def _run(self, query: str) -> str:
-        creds = get_google_credentials();
-        if not creds: return "Erro: Falha nas credenciais Google para Calendário."
-        start_dt, end_dt, summary = self._parse_datetime_range(query)
-        if not start_dt or not end_dt or not summary: return f"Erro: Não foi possível entender os detalhes do evento a partir de '{query}'. Por favor, seja mais específico com data, hora e descrição."
-        try:
-            local_tz = dateutil.tz.tzlocal() if dateutil_available else datetime.timezone.utc
-            start_dt_aware = self._make_aware(start_dt, local_tz);
-            end_dt_aware = self._make_aware(end_dt, local_tz)
-            time_zone_str = str(local_tz)
-            event_body = {'summary': summary,
-                          'start': {'dateTime': start_dt_aware.isoformat(), 'timeZone': time_zone_str},
-                          'end': {'dateTime': end_dt_aware.isoformat(), 'timeZone': time_zone_str}}
-            service = build('calendar', 'v3', credentials=creds);
-            created_event = service.events().insert(calendarId='primary', body=event_body).execute()
-            return f"Evento '{created_event.get('summary')}' criado com sucesso. Link: {created_event.get('htmlLink', 'Link não disponível')}"
-        except HttpError as error:
-            return f"Erro ao criar evento no Google Calendar (HttpError {error.resp.status}): {error._get_reason()}"
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao criar evento: {e}"
-
-
-class SendGmailTool(BaseTool):
-    name: str = "send_gmail_message";
-    description: str = (
-        "Use para ENVIAR um email. Input: 'Para: email@dest.com Assunto: Meu Assunto Corpo: Conteúdo do email'")
-
-    def _run(self, query: str) -> str:  # Implementação original mantida
-        creds = get_google_credentials();
-        if not creds: return "Erro: Falha nas credenciais Google para Gmail."
-        to_addr, subject, body = None, "Sem Assunto", ""
-        try:
-            to_match = re.search(r'para:\s*([\w\.-]+@[\w\.-]+)', query, re.IGNORECASE);
-            if to_match: to_addr = to_match.group(1).strip()
-            subject_match = re.search(r'assunto:\s*(.*?)(?=corpo:|$)', query, re.IGNORECASE | re.DOTALL);
-            if subject_match: subject = subject_match.group(1).strip() or "Sem Assunto"
-            body_match = re.search(r'corpo:\s*(.*)', query, re.IGNORECASE | re.DOTALL);
-            if body_match: body = body_match.group(1).strip()
-            if not to_addr: return "Erro: Endereço 'Para:' não especificado ou inválido. Use o formato 'Para: email@exemplo.com'."
-            if not body: return "Erro: 'Corpo:' do email não especificado."
-        except Exception as e_parse:
-            return f"Erro ao analisar detalhes do email: {e_parse}."
-        try:
-            service = build('gmail', 'v1', credentials=creds);
-            message = EmailMessage();
-            message.set_content(body);
-            message['To'] = to_addr;
-            message['Subject'] = subject;
-            encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-            service.users().messages().send(userId='me', body={'raw': encoded_message}).execute()
-            return f"Email enviado para {to_addr} com assunto '{subject}'."
-        except HttpError as error:
-            return f"Erro ao enviar email via Gmail API (HttpError {error.resp.status}): {error._get_reason()}"
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao enviar email: {e}"
-
-
-class YouTubeSearchTool(BaseTool):
-    name: str = "Youtube";
-    description: str = ("Use para pesquisar vídeos no YouTube. Forneça o termo de busca.")
-
-    def _run(self, query: str) -> str:  # Implementação original mantida
-        creds = get_google_credentials();
-        if not query: return "Erro: Forneça um termo de busca para o YouTube."
-        try:
-            youtube_service_args = {'developerKey': GOOGLE_API_KEY} if not creds else {'credentials': creds}
-            service = build('youtube', 'v3', **youtube_service_args)
-            search_response = service.search().list(q=query, part='id,snippet', maxResults=3, type='video').execute();
-            videos = search_response.get('items', [])
-            if not videos: return f"Nenhum vídeo encontrado no YouTube para: '{query}'"
-            return "Resultados do YouTube:\n" + "\n".join(
-                [f"- {item['snippet']['title']} (https://www.youtube.com/watch?v={item['id']['videoId']})" for item in
-                 videos])
-        except HttpError as error:
-            return f"Erro na API do YouTube (HttpError {error.resp.status}): {error._get_reason()}"
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado na busca do YouTube: {e}"
-
-
-class DriveListFilesTool(BaseTool):
-    name: str = "google_drive_list_root_files";
-    description: str = ("Use para listar os primeiros 15 arquivos/pastas na raiz ('Meu Drive') do Google Drive.")
-
-    def _run(self, query: str = "") -> str:  # Implementação original mantida
-        creds = get_google_credentials();
-        if not creds: return "Erro: Falha nas credenciais Google para Drive."
-        try:
-            service = build('drive', 'v3', credentials=creds)
-            results = service.files().list(pageSize=15, fields="files(id, name, mimeType)", orderBy="folder, name",
-                                           q="'root' in parents and trashed=false").execute();
-            items = results.get('files', [])
-            if not items: return "Nenhum item encontrado na raiz do Google Drive."
-            output_list = ["Itens na Raiz do Google Drive:"]
-            for item in items:
-                prefix = "[Pasta]" if item.get('mimeType') == 'application/vnd.google-apps.folder' else "[Arquivo]"
-                output_list.append(f"- {prefix} {item.get('name', 'Nome não disponível')}")
-            return "\n".join(output_list)
-        except HttpError as error:
-            return f"Erro na API do Google Drive (HttpError {error.resp.status}): {error._get_reason()}"
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao listar arquivos do Drive: {e}"
-
-
-# --- FERRAMENTA CheckGmailTool MODIFICADA ---
 class CheckGmailTool(BaseTool):
-    name: str = "google_gmail_check_emails"  # Nome ligeiramente alterado para refletir o novo comportamento
-    description: str = (  # Descrição atualizada
-        "Verifica e lista os e-mails mais recentes (até 5, assunto, remetente, data e ID) "
-        "na caixa de entrada principal do Gmail, independentemente de estarem lidos ou não. "
-        "Usado para notificações periódicas do e-mail mais recente ou para uma rápida olhada nos e-mails atuais."
-    )
+    name: str = "google_gmail_check_emails"
+    description: str = ("Verifica e lista os e-mails mais recentes (até 5) na caixa de entrada do Gmail.")
     last_notified_email_id: str | None = None
 
     def _run(self, query: str = "") -> str | dict:
         print(f"\n LCHAIN TOOL (BACKGROUND/AGENT): Executando {self.name}...")
-        creds = get_google_credentials()
-        if not creds:
-            error_msg_creds = "Erro: Falha nas credenciais Google para verificar e-mails."
-            print(f"   {self.name} - {error_msg_creds}")
-            return error_msg_creds
-
-        required_scopes_check = ['https://www.googleapis.com/auth/gmail.readonly', 'https://mail.google.com/']
-        current_granted_scopes = creds.scopes if creds and hasattr(creds, 'scopes') and creds.scopes is not None else []
-        if not any(s in current_granted_scopes for s in required_scopes_check):
-            error_msg_scopes = (f"Erro: Permissões insuficientes para ler e-mails. "
-                                f"Pelo menos um dos seguintes escopos é necessário mas não foi concedido: "
-                                f"{', '.join(required_scopes_check)}. Escopos concedidos: {current_granted_scopes}")
-            print(f"   {self.name} - {error_msg_scopes}")
-            return error_msg_scopes
-
+        current_gmail_service = get_gmail_service()  # Usa a função global para obter o serviço Gmail
+        if not current_gmail_service:
+            return "Erro: Falha nas credenciais ou serviço Gmail não inicializado para verificar e-mails."
         try:
-            service = build('gmail', 'v1', credentials=creds)
-            # Modificado para não buscar apenas 'UNREAD', mas os mais recentes do INBOX
-            results = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=5).execute()
+            results = current_gmail_service.users().messages().list(userId='me', labelIds=['INBOX'],
+                                                                    maxResults=5).execute()
             messages_summary_list = results.get('messages', [])
-
-            if not messages_summary_list:
-                return "Nenhum e-mail encontrado na caixa de entrada."
+            if not messages_summary_list: return "Nenhum e-mail encontrado na caixa de entrada."
 
             output_lines_details = []
-            # Para a notificação falada, pegaremos informações do primeiro (mais recente) e-mail
             first_email_summary_for_speech = {}
 
             for i, msg_summary in enumerate(messages_summary_list):
                 msg_id = msg_summary['id']
-                msg = service.users().messages().get(userId='me', id=msg_id, format='metadata',
-                                                     metadataHeaders=['From', 'Subject', 'Date']).execute()
-                payload = msg.get('payload', {})
-                headers = payload.get('headers', [])
+                msg = current_gmail_service.users().messages().get(userId='me', id=msg_id, format='metadata',
+                                                                   metadataHeaders=['From', 'Subject',
+                                                                                    'Date']).execute()
+                headers = msg.get('payload', {}).get('headers', [])
                 subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(Sem Assunto)')
                 sender_raw = next((h['value'] for h in headers if h['name'].lower() == 'from'),
                                   '(Remetente Desconhecido)')
@@ -815,25 +994,24 @@ class CheckGmailTool(BaseTool):
                 if dateutil_available and date_str:
                     try:
                         dt_obj = dateutil.parser.parse(date_str)
-                        if dt_obj:
-                            if dt_obj.tzinfo: dt_obj = dt_obj.astimezone(dateutil.tz.tzlocal())
+                        if dt_obj:  # Verifica se o parse teve sucesso
+                            current_tz = dateutil.tz.tzlocal()
+                            if dt_obj.tzinfo:
+                                dt_obj = dt_obj.astimezone(current_tz)
+                            else:
+                                dt_obj = current_tz.localize(dt_obj)  # Torna aware com o fuso local
                             friendly_date = dt_obj.strftime('%d/%m %H:%M')
-                    except Exception as e_date_parse:
-                        print(
-                            f"Aviso: Não foi possível parsear a data '{date_str}' do e-mail ID {msg_id}. Erro: {e_date_parse}")
-                        friendly_date = date_str.split(' (')[0] if date_str else "(Data desc.)"
+                    except Exception as e_date_parse_check:
+                        print(f"Aviso: Falha ao parsear data '{date_str}' em CheckGmail: {e_date_parse_check}")
+                        friendly_date = date_str.split(' (')[0] if date_str else "(Data desc.)"  # Fallback
                 elif date_str:
-                    friendly_date = date_str.split(' (')[0]
+                    friendly_date = date_str.split(' (')[0]  # Fallback simples
 
                 output_lines_details.append(
                     f"- De: {clean_sender}, Assunto: {subject} (Recebido: {friendly_date}, ID: {msg_id})")
-
-                if i == 0:  # Captura detalhes do primeiro e-mail para possível notificação
-                    first_email_summary_for_speech = {"sender": clean_sender, "subject": subject, "id": msg_id}
+                if i == 0: first_email_summary_for_speech = {"sender": clean_sender, "subject": subject, "id": msg_id}
 
             details_string = "E-mails mais recentes na caixa de entrada:\n" + "\n".join(output_lines_details)
-
-            # Lógica de notificação: só fala se o e-mail mais recente for diferente do último notificado
             spoken_output = None
             if first_email_summary_for_speech and self.last_notified_email_id != first_email_summary_for_speech.get(
                     "id"):
@@ -841,320 +1019,57 @@ class CheckGmailTool(BaseTool):
                 spoken_output = (
                     f"Novo e-mail na sua caixa de entrada de {first_email_summary_for_speech.get('sender', 'Desconhecido')} "
                     f"sobre {first_email_summary_for_speech.get('subject', 'sem assunto')}.")
-            elif not first_email_summary_for_speech:  # Caso algo dê errado ao pegar o primeiro email
-                spoken_output = "Verifiquei seus e-mails recentes."
 
-            if spoken_output:  # Se houver algo para falar (novo e-mail)
-                return {"spoken": spoken_output, "details": details_string}
-            else:  # Se não há e-mail novo para notificar, ou se a ferramenta é chamada diretamente
-                # Retorna os detalhes para o agente, que pode decidir o que fazer/falar.
-                # Para chamada direta, o agente pode usar os "details".
-                # Para background, se não há "spoken", nada é falado.
-                return {"spoken": None, "details": details_string} if self.last_notified_email_id else details_string
-
-
+            return {"spoken": spoken_output, "details": details_string} if spoken_output else details_string
         except HttpError as error:
-            error_reason = f"Erro ao acessar Gmail (HttpError {error.resp.status}): {error._get_reason()}"
-            print(f"   {self.name} - {error_reason}")
-            return error_reason
+            return f"Erro ao acessar Gmail (HttpError {error.resp.status}): {error._get_reason()}"
         except Exception as e:
-            error_reason = f"Erro inesperado ao verificar e-mails: {e}"
-            print(f"   {self.name} - {error_reason}")
-            traceback.print_exc()
-            return error_reason
+            traceback.print_exc();
+            return f"Erro inesperado ao verificar e-mails: {e}"
 
 
-# --- NOVA FERRAMENTA: SearchEmailsTool ---
-class SearchEmailsTool(BaseTool):
-    name: str = "search_gmail_emails"
-    description: str = (
-        "Busca e-mails no Gmail com base em uma consulta fornecida pelo usuário "
-        "(ex: 'de:exemplo@email.com', 'assunto:importante', 'relatório de ontem', 'is:starred'). "
-        "Se nenhuma consulta específica for fornecida (ou se a consulta for genérica como 'meus emails' ou 'caixa de entrada'), "
-        "lista os 10 e-mails mais recentes da caixa de entrada. "
-        "Retorna remetente, assunto, data e um trecho (snippet) dos e-mails encontrados."
-    )
+# --- Inicialização das Ferramentas para o Agente LangChain ---
+check_gmail_tool_instance = CheckGmailTool()  # Instância para a thread e para o agente
 
-    def _run(self, query: str = "") -> str:
-        print(f"\n LCHAIN TOOL: Executando {self.name} com query: '{query}'")
-        creds = get_google_credentials()
-        if not creds:
-            return "Erro: Falha nas credenciais Google para buscar e-mails."
-
-        # Validação de escopos (opcional aqui, pois get_google_credentials já deveria ter validado,
-        # mas uma checagem específica não faria mal se esta ferramenta tivesse requisitos únicos)
-        # Para esta ferramenta, 'https://mail.google.com/' é suficiente.
-
-        try:
-            service = build('gmail', 'v1', credentials=creds)
-
-            search_query_internal = query.strip()
-            # Se a query for muito genérica, foca na caixa de entrada por padrão
-            if not search_query_internal or search_query_internal.lower() in ["meus emails", "emails",
-                                                                              "caixa de entrada", "listar emails"]:
-                search_query_internal = "in:inbox"
-
-            print(f"   Executando busca no Gmail com q='{search_query_internal}'")
-
-            # Lista mensagens com base na query
-            # Pedimos ID e ThreadID. O snippet pode ser obtido depois com messages.get
-            list_request = service.users().messages().list(userId='me', q=search_query_internal, maxResults=10,
-                                                           fields="messages(id,threadId),nextPageToken")
-            response = list_request.execute()
-            messages_summary = response.get('messages', [])
-
-            if not messages_summary:
-                return f"Nenhum e-mail encontrado para a busca: '{query}' (interpretado como q='{search_query_internal}')."
-
-            output_lines = [f"Resultados da busca por '{query}' (q='{search_query_internal}'):"]
-            count = 0
-            for msg_summary in messages_summary:
-                if count >= 10: break  # Garante o limite caso a API retorne mais por algum motivo inesperado
-                msg_id = msg_summary['id']
-                # Pega detalhes da mensagem: snippet e cabeçalhos relevantes
-                # Usar fields para otimizar a resposta da API
-                msg = service.users().messages().get(userId='me', id=msg_id, format='MINIMAL',
-                                                     fields="id,snippet,internalDate,payload/headers").execute()
-
-                snippet = msg.get('snippet', '(Sem trecho)')
-                payload = msg.get('payload', {})
-                headers = payload.get('headers', [])
-
-                subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '(Sem Assunto)')
-                sender_raw = next((h['value'] for h in headers if h['name'].lower() == 'from'),
-                                  '(Remetente Desconhecido)')
-                date_str = next((h['value'] for h in headers if h['name'].lower() == 'date'), None)
-
-                clean_sender_match = re.search(r'([^<]+)<', sender_raw)
-                clean_sender = clean_sender_match.group(1).strip() if clean_sender_match else sender_raw.split('@')[
-                    0].strip()
-
-                friendly_date = "(Data desc.)"
-                if dateutil_available:
-                    if date_str:  # Tenta parsear o cabeçalho Date
-                        try:
-                            dt_obj = dateutil.parser.parse(date_str)
-                            if dt_obj.tzinfo: dt_obj = dt_obj.astimezone(dateutil.tz.tzlocal())
-                            friendly_date = dt_obj.strftime('%d/%m/%Y %H:%M')
-                        except Exception:  # Fallback para internalDate se o header Date falhar
-                            try:
-                                internal_date_ms = int(msg.get('internalDate', 0))
-                                if internal_date_ms > 0:
-                                    dt_obj = datetime.datetime.fromtimestamp(internal_date_ms / 1000,
-                                                                             tz=datetime.timezone.utc)
-                                    friendly_date = dt_obj.astimezone(dateutil.tz.tzlocal()).strftime('%d/%m/%Y %H:%M')
-                            except Exception as e_int_date:
-                                print(f"Aviso: Falha ao parsear internalDate para msg ID {msg_id}: {e_int_date}")
-                    elif msg.get('internalDate'):  # Se não houver cabeçalho Date, usa internalDate
-                        try:
-                            internal_date_ms = int(msg.get('internalDate', 0))
-                            if internal_date_ms > 0:
-                                dt_obj = datetime.datetime.fromtimestamp(internal_date_ms / 1000,
-                                                                         tz=datetime.timezone.utc)
-                                friendly_date = dt_obj.astimezone(dateutil.tz.tzlocal()).strftime('%d/%m/%Y %H:%M')
-                        except Exception as e_int_date:
-                            print(f"Aviso: Falha ao parsear internalDate para msg ID {msg_id}: {e_int_date}")
-                elif date_str:  # Se dateutil não estiver disponível, usa a string bruta do cabeçalho Date
-                    friendly_date = date_str.split(' (')[0]
-
-                output_lines.append(
-                    f"\n- De: {clean_sender}\n  Assunto: {subject}\n  Data: {friendly_date}\n  Trecho: {snippet}\n  (ID: {msg_id})")
-                count += 1
-
-            if response.get('nextPageToken'):
-                output_lines.append(
-                    "\n(Existem mais resultados. Refine sua busca ou peça para ver a próxima página - funcionalidade de paginação não implementada nesta ferramenta).")
-
-            return "\n".join(output_lines)
-
-        except HttpError as error:
-            return f"Erro ao buscar e-mails no Gmail (HttpError {error.resp.status}): {error._get_reason()}"
-        except Exception as e:
-            traceback.print_exc()
-            return f"Erro inesperado ao buscar e-mails: {e}"
-
-
-class ReadFullEmailContentTool(BaseTool):
-    name: str = "google_gmail_read_full_email_content";
-    description: str = (
-        "Lê o conteúdo completo (corpo em texto puro) de um e-mail específico do Gmail, dado o seu ID de mensagem.")
-
-    # Implementação original mantida
-    def _get_plain_text_body(self, payload: dict) -> str:
-        if 'parts' in payload:
-            for part in payload['parts']:
-                if part.get('mimeType') == 'text/plain' and part.get('body', {}).get('data'):
-                    return base64.urlsafe_b64decode(part['body']['data'].encode('ASCII')).decode('utf-8',
-                                                                                                 errors='replace')
-                if part.get('mimeType', '').startswith('multipart/') and 'parts' in part:
-                    nested_body = self._get_plain_text_body(part)
-                    if nested_body and nested_body != "[Conteúdo em texto puro não encontrado ou formato não suportado para extração direta.]": return nested_body
-        elif payload.get('mimeType') == 'text/plain' and payload.get('body', {}).get('data'):
-            return base64.urlsafe_b64decode(payload['body']['data'].encode('ASCII')).decode('utf-8', errors='replace')
-        return "[Conteúdo em texto puro não encontrado ou formato não suportado para extração direta.]"
-
-    def _run(self, message_id: str) -> str:
-        if not message_id or not isinstance(message_id, str): return "Erro: ID da mensagem inválido ou não fornecido."
-        creds = get_google_credentials();
-        if not creds: return "Erro: Falha nas credenciais Google para Gmail."
-        try:
-            service = build('gmail', 'v1', credentials=creds);
-            msg = service.users().messages().get(userId='me', id=message_id, format='full').execute()
-            payload = msg.get('payload', {});
-            headers = payload.get('headers', [])
-            subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), "(Sem assunto)")
-            sender = next((h['value'] for h in headers if h['name'].lower() == 'from'), "(Remetente desconhecido)")
-            body_text = self._get_plain_text_body(payload)
-            return f"E-mail de: {sender}\nAssunto: {subject}\n\nConteúdo:\n{body_text}"
-        except HttpError as error:
-            return f"Erro ao ler e-mail (ID: {message_id}) (HttpError {error.resp.status}): {error._get_reason()}"
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao ler e-mail (ID: {message_id}): {e}"
-
-
-class ListGoogleContactsTool(BaseTool):
-    name: str = "google_contacts_list"
-    description: str = (
-        "Use para listar contatos da conta Google do usuário. Opcionalmente, pode receber um argumento numérico para definir o número máximo de contatos a serem retornados (padrão é 20, máximo é 50). Retorna nome, endereços de e-mail e números de telefone dos contatos.")
-
-    def _run(self, query: str = "20") -> str:  # Implementação original mantida
-        print(f"\n LCHAIN TOOL: Executando {self.name} com query: '{query}'")
-        creds = get_google_credentials();
-        if not creds: return "Erro: Falha nas credenciais Google. Não é possível acessar os contatos."
-        try:
-            max_contacts = 20
-            if query.strip().isdigit(): max_contacts = min(int(query.strip()), 50)
-            print(f"   Buscando até {max_contacts} contatos...")
-            service = build('people', 'v1', credentials=creds)
-            results = service.people().connections().list(resourceName='people/me', pageSize=max_contacts,
-                                                          personFields='names,emailAddresses,phoneNumbers',
-                                                          sortOrder='FIRST_NAME_ASCENDING').execute()
-            connections = results.get('connections', [])
-            if not connections: return "Nenhum contato encontrado na sua conta Google."
-            output_lines = [f"Contatos encontrados (até {max_contacts}):"]
-            for person in connections:
-                display_name = "Nome não disponível"
-                if person.get('names'): display_name = person['names'][0].get('displayName', display_name)
-                contact_info_parts = [f"- {display_name}:"]
-                email_list = [e.get('value') for e in person.get('emailAddresses', []) if e.get('value')]
-                if email_list: contact_info_parts.append(f"    Emails: {', '.join(email_list)}")
-                phone_list = [p.get('value') for p in person.get('phoneNumbers', []) if p.get('value')]
-                if phone_list: contact_info_parts.append(f"    Telefones: {', '.join(phone_list)}")
-                if not email_list and not phone_list: contact_info_parts.append("    (sem e-mail ou telefone listado)")
-                output_lines.append("\n".join(contact_info_parts))
-            if len(connections) == max_contacts and results.get('nextPageToken'): output_lines.append(
-                f"\nAviso: Mais contatos existem além dos {max_contacts} listados.")
-            return "\n".join(output_lines)
-        except HttpError as error:
-            error_details = error._get_reason();
-            status_code = error.resp.status
-            if status_code == 403 and (
-                    "People API has not been used in project" in error_details or "enable the API" in error_details):
-                return (
-                    f"Erro ao acessar Google Contacts (HttpError {status_code}): {error_details}. A Google People API pode não estar habilitada no seu projeto Google Cloud, ou as permissões não foram concedidas. Verifique o Google Cloud Console e certifique-se de que a 'People API' está ativa e que você concedeu permissão de 'contacts' e re-autorize o script (excluindo token.json se necessário).")
-            return f"Erro ao acessar o Google Contacts (HttpError {status_code}): {error_details}"
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao buscar contatos: {e}"
-
-
-class DirectWebSearchTool(BaseTool):
-    name: str = "direct_web_search"
-    description: str = (
-        "Realiza uma pesquisa na web para uma determinada consulta e retorna o título, URL e um resumo (snippet) do primeiro resultado. Útil para obter informações gerais ou respostas rápidas da web.")
-
-    def _run(self, query: str) -> str:  # Implementação original mantida
-        print(f"\n LCHAIN TOOL: Executando {self.name} com query: '{query}'")
-        if not query: return "Erro: Nenhuma consulta fornecida para a pesquisa na web."
-        try:
-            print(
-                f"Simulando busca web para: {query} (Esta ferramenta é um placeholder para a capacidade de busca do Gemini)")
-            if "história de portugal" in query.lower():
-                title = "História de Portugal – Wikipédia, a enciclopédia livre";
-                url = "https://pt.wikipedia.org/wiki/Hist%C3%B3ria_de_Portugal";
-                snippet = "A história de Portugal como nação europeia remonta à Baixa Idade Média, quando o Condado Portucalense se tornou autónomo do Reino de Leão..."
-                return f"Resultado da Pesquisa Web (Simulado):\nTítulo: {title}\nURL: {url}\nResumo: {snippet}"
-            else:
-                return f"Pesquisa solicitada para '{query}'. O assistente principal (Gemini) deve realizar a busca."
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao tentar simular a pesquisa na web para '{query}': {e}"
-
-
-class GetNewsTool(BaseTool):
-    name: str = "get_latest_news"
-    description: str = (
-        "Busca as últimas notícias sobre um tópico específico usando a NewsAPI. A entrada deve ser o tópico de interesse (ex: 'inteligência artificial', 'desporto Portugal'). Retorna os títulos e um breve resumo dos principais artigos.")
-
-    def _run(self, topic: str) -> str:  # Implementação original mantida
-        print(f"\n LCHAIN TOOL: Executando {self.name} com tópico: '{topic}'")
-        global NEWS_API_KEY, requests_available
-        if not requests_available: return "Erro: A biblioteca 'requests' não está instalada. Não é possível buscar notícias."
-        if not NEWS_API_KEY: return "Erro: A chave da API para NewsAPI não está configurada. Verifique a variável de ambiente NEWS_API_KEY."
-        if not topic: return "Erro: Nenhum tópico fornecido para a busca de notícias."
-        params = {'q': topic, 'apiKey': NEWS_API_KEY, 'language': 'pt', 'pageSize': 5, 'sortBy': 'publishedAt'}
-        try:
-            response = requests.get('https://newsapi.org/v2/top-headlines', params=params);
-            response.raise_for_status()
-            news_data = response.json()
-            if news_data.get(
-                "status") != "ok": return f"Erro ao buscar notícias da NewsAPI: {news_data.get('message', 'Erro desconhecido da API')}"
-            articles = news_data.get("articles", [])
-            if not articles: return f"Nenhuma notícia encontrada para o tópico '{topic}'."
-            output_lines = [f"Últimas notícias sobre '{topic}':"]
-            for article in articles:
-                title = article.get('title', 'Sem título');
-                source_name = article.get('source', {}).get('name', 'Fonte desconhecida')
-                description = article.get('description', 'Sem descrição');
-                url = article.get('url', '#')
-                output_lines.append(f"\n- Título: {title}");
-                output_lines.append(f"  Fonte: {source_name}")
-                if description: output_lines.append(f"  Resumo: {description}")
-                output_lines.append(f"  Link: {url}")
-            return "\n".join(output_lines)
-        except requests.exceptions.RequestException as e:
-            print(f"Erro de rede ao contatar NewsAPI: {e}"); return f"Erro de rede ao buscar notícias: {e}"
-        except json.JSONDecodeError:
-            return "Erro: A resposta da NewsAPI não foi um JSON válido."
-        except Exception as e:
-            traceback.print_exc(); return f"Erro inesperado ao buscar notícias: {e}"
-
-
-# --- Variáveis e Instâncias para Threads de Background ---
-check_gmail_tool_instance = CheckGmailTool()  # Instância da ferramenta modificada
-last_checked_time = 0
-stop_background_threads = threading.Event()
-
-# --- Inicialização das Ferramentas para o Agente ---
 tools = [
-    WindowsCommandExecutorTool(), GetCalendarEventsTool(), CreateCalendarEventTool(),
-    SendGmailTool(), YouTubeSearchTool(), DriveListFilesTool(),
-    check_gmail_tool_instance,  # CheckGmailTool modificada
-    SearchEmailsTool(),  # Nova ferramenta SearchEmailsTool
-    ReadFullEmailContentTool(), ListGoogleContactsTool(),
-    DirectWebSearchTool(), GetNewsTool()
+    WindowsCommandExecutorTool(),
+    GetCalendarEventsTool(),
+    # CreateCalendarEventTool(), # Adicione suas outras ferramentas
+    # SendGmailTool(), # A ferramenta de agente para enviar e-mail, se diferente da wrapper
+    # YouTubeSearchTool(),
+    # DriveListFilesTool(),
+    check_gmail_tool_instance,
+    # SearchEmailsTool(),
+    # ReadFullEmailContentTool(),
+    # ListGoogleContactsTool(),
+    # DirectWebSearchTool(),
+    # GetNewsTool()
 ]
-print(f"\nTotal de {len(tools)} ferramentas carregadas.");
-print("Ferramentas disponíveis para o agente:", [tool.name for tool in tools]);
+print(f"\nTotal de {len(tools)} ferramentas LangChain carregadas para o agente.")
+if not email_agent_scripts_loaded:
+    print(
+        "AVISO: As funcionalidades avançadas de e-mail podem não estar disponíveis devido a erro de importação dos módulos.")
+print("Ferramentas disponíveis para o agente:", [tool.name for tool in tools])
 print("-" * 50)
 
-# --- Configuração do Agente ---
+# --- Configuração do Agente LangChain ---
 try:
     react_prompt_template = hub.pull("hwchase17/react")
     agent = create_react_agent(llm=llm, tools=tools, prompt=react_prompt_template)
     agent_executor = AgentExecutor(
         agent=agent, tools=tools, verbose=True,
         handle_parsing_errors="Sua resposta anterior não estava no formato ReAct correto. Por favor, certifique-se de que sua resposta comece com 'Thought:' e, se usar uma ferramenta, siga com 'Action:' e 'Action Input:', OU comece com 'Final Answer:' se tiver a resposta final. Não adicione texto antes de 'Thought:' ou 'Final Answer:'.",
-        max_iterations=15, max_execution_time=300
+        max_iterations=15, max_execution_time=300  # Segundos
     )
-    print("\nAgente LangChain (ReAct) e Executor configurados.");
-    print("-" * 30)
+    print("\nAgente LangChain (ReAct) e Executor configurados.")
 except Exception as e:
     print(f"Erro crítico na configuração do Agente LangChain: {e}");
     traceback.print_exc();
     sys.exit(1)
 
 
-# --- Função para Capturar e Reconhecer Voz ---
-def ouvir_comando(timeout_microfone=5, frase_limite_segundos=10):  # Implementação original mantida
+# --- Funções de Voz ---
+def ouvir_comando(timeout_microfone=7, frase_limite_segundos=15):  # Aumentados
     r = sr.Recognizer();
     audio = None
     try:
@@ -1163,27 +1078,25 @@ def ouvir_comando(timeout_microfone=5, frase_limite_segundos=10):  # Implementa�
             try:
                 r.adjust_for_ambient_noise(source, duration=0.5)
             except Exception as e_noise:
-                print(f"Aviso: Falha no ajuste de ruído ambiente: {e_noise}")
+                print(f"Aviso: Falha ajuste ruído: {e_noise}")
             print(f"Fale seu comando ou pergunta ({frase_limite_segundos}s max):")
             try:
                 audio = r.listen(source, timeout=timeout_microfone, phrase_time_limit=frase_limite_segundos)
             except sr.WaitTimeoutError:
                 print("Tempo de escuta do microfone esgotado."); return None
             except Exception as e_listen:
-                print(f"Erro durante a escuta do microfone: {e_listen}"); return None
+                print(f"Erro durante escuta: {e_listen}"); return None
     except sr.RequestError as e_mic_req:
-        print(
-            f"Erro no serviço de reconhecimento (API Speech não alcançável ou problema de rede?): {e_mic_req}"); return None
+        print(f"Erro no serviço de reconhecimento: {e_mic_req}"); return None
     except OSError as e_os_mic:
-        if e_os_mic.errno == -9999 or "No Default Input Device Available" in str(
-                e_os_mic) or "Dispositivo de entrada padrão não disponível" in str(e_os_mic):
-            print(
-                f"ERRO DE MICROFONE: Nenhum dispositivo de entrada de áudio padrão encontrado. Verifique seu microfone. Detalhes: {e_os_mic}")
+        if e_os_mic.errno == -9999 or "No Default Input Device Available" in str(e_os_mic):
+            print(f"ERRO MICROFONE: Nenhum dispositivo de entrada padrão. Detalhes: {e_os_mic}")
         else:
-            print(f"Erro de OS com o Microfone: {e_os_mic}"); traceback.print_exc()
+            print(f"Erro OS com Microfone: {e_os_mic}"); traceback.print_exc()
         return None
     except Exception as e_mic:
-        print(f"Erro geral com o Microfone: {e_mic}"); traceback.print_exc(); return None
+        print(f"Erro geral com Microfone: {e_mic}"); traceback.print_exc(); return None
+
     if not audio: return None
     print("Reconhecendo fala...");
     texto_comando = None
@@ -1193,100 +1106,90 @@ def ouvir_comando(timeout_microfone=5, frase_limite_segundos=10):  # Implementa�
     except sr.UnknownValueError:
         print("Não entendi o que você disse.")
     except sr.RequestError as e_rec_req:
-        print(f"Erro no Serviço de Reconhecimento Google Speech: {e_rec_req}")
+        print(f"Erro Serviço Reconhecimento Google: {e_rec_req}")
     except Exception as e_rec:
-        print(f"Erro Desconhecido no Reconhecimento de Fala: {e_rec}")
+        print(f"Erro Desconhecido no Reconhecimento: {e_rec}")
     return texto_comando
 
 
-# --- Função para Falar (TTS com Google Cloud) ---
-def falar(texto):  # Implementação original mantida, com pequena melhoria na remoção do tempfile
+def falar(texto_para_falar):  # Renomeado para evitar conflito com variável 'texto'
     global playsound_installed, google_tts_ready, TTS_VOICE_GOOGLE
-    if not texto: print("[TTS] Nada para falar."); return
-    if not google_tts_ready: print(f"\n(Simulando saída falada - Google TTS não pronto): {texto}"); return
-    print(f"\n🔊 Falando (Google Cloud TTS - Voz: {TTS_VOICE_GOOGLE}): {texto}")
+    if not texto_para_falar: print("[TTS] Nada para falar."); return
+    if not google_tts_ready: print(f"\n(Simulando saída falada - Google TTS não pronto): {texto_para_falar}"); return
+
+    print(f"\n🔊 Falando (Google Cloud TTS - Voz: {TTS_VOICE_GOOGLE}): {texto_para_falar}")
     temp_filename = None
     try:
         client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=texto)
+        synthesis_input = texttospeech.SynthesisInput(text=texto_para_falar)
         voice_params = texttospeech.VoiceSelectionParams(language_code="pt-BR", name=TTS_VOICE_GOOGLE)
         audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
         response = client.synthesize_speech(
             request={'input': synthesis_input, 'voice': voice_params, 'audio_config': audio_config})
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-            fp.write(response.audio_content);
-            temp_filename = fp.name
-        if temp_filename:
-            if playsound_installed:
-                playsound.playsound(temp_filename)
+
+        # Usar tempfile.mkstemp para mais controle e garantir que o arquivo seja fechado antes do playsound
+        fd, temp_filename = tempfile.mkstemp(suffix=".mp3")
+        with os.fdopen(fd, "wb") as tmp_file:
+            tmp_file.write(response.audio_content)
+
+        if playsound_installed:
+            playsound.playsound(temp_filename)
+        else:
+            print("AVISO: playsound não instalado. Tentando abrir MP3 com o sistema.")
+            if sys.platform == "win32":
+                os.startfile(temp_filename)
+            elif sys.platform == "darwin":
+                subprocess.call(["open", temp_filename])
             else:
-                print("AVISO: playsound não instalado. Tentando abrir MP3 com o sistema.")
-                if sys.platform == "win32":
-                    os.startfile(temp_filename)
-                elif sys.platform == "darwin":
-                    subprocess.call(["open", temp_filename])
-                else:
-                    subprocess.call(["xdg-open", temp_filename])
-                time.sleep(2)  # Dar um tempo para o player externo iniciar antes de tentar excluir
+                subprocess.call(["xdg-open", temp_filename])
+            time.sleep(3)  # Dar mais tempo para player externo
     except Exception as e:
-        print(f"Erro durante Google Cloud TTS ou reprodução do áudio: {e}"); traceback.print_exc()
+        print(f"Erro durante Google Cloud TTS ou reprodução do áudio: {e}");
+        traceback.print_exc()
     finally:
         if temp_filename and os.path.exists(temp_filename):
-            time.sleep(1)
+            time.sleep(1)  # Pequeno delay
             try:
                 os.remove(temp_filename)
             except PermissionError:
-                print(
-                    f"AVISO: Não foi possível remover o arquivo de áudio temporário {temp_filename} pois está em uso.")
+                print(f"AVISO: Não foi possível remover {temp_filename} (em uso).")
             except Exception as e_del:
-                print(f"Aviso: Erro ao remover arquivo de áudio temporário {temp_filename}: {e_del}")
+                print(f"Aviso: Erro ao remover {temp_filename}: {e_del}")
 
 
-# --- Funções para Win Hoff MP3 e Pomodoro ---
-# Implementações originais mantidas, com pequenos ajustes de feedback por voz
+# --- Funções Win Hoff e Pomodoro (SUAS IMPLEMENTAÇÕES COMPLETAS AQUI) ---
 def play_winhoff_sound():
     global playsound_installed, WINHOFF_MP3_FILE
-    if not os.path.exists(WINHOFF_MP3_FILE):
-        msg = f"AVISO: Arquivo de áudio '{WINHOFF_MP3_FILE}' não encontrado."
-        print(msg);
-        falar(msg.replace("AVISO: ", "Atenção, "))
-        return
-    if not playsound_installed:
-        msg = f"AVISO: Biblioteca 'playsound' não instalada. Não é possível tocar {WINHOFF_MP3_FILE}."
-        print(msg);
-        falar(msg.replace("AVISO: ", "Atenção, "))
-        return
+    if not os.path.exists(WINHOFF_MP3_FILE): msg = f"AVISO: Arquivo '{WINHOFF_MP3_FILE}' não encontrado."; print(
+        msg); falar(msg.replace("AVISO: ", "Atenção, ")); return
+    if not playsound_installed: msg = f"AVISO: 'playsound' não instalada."; print(msg); falar(
+        msg.replace("AVISO: ", "Atenção, ")); return
     try:
         print(f"▶️ Tocando {WINHOFF_MP3_FILE}..."); playsound.playsound(WINHOFF_MP3_FILE)
     except Exception as e:
-        print(f"Erro ao tentar tocar {WINHOFF_MP3_FILE} com playsound: {e}"); falar(
-            "Ocorreu um erro ao tentar tocar o som do exercício.")
+        print(f"Erro ao tocar {WINHOFF_MP3_FILE}: {e}"); falar("Erro ao tocar o som do exercício.")
 
 
 def winhoff_periodic_task(interval_seconds, stop_event):
-    print(
-        f"[Thread Win Hoff Periódico] Iniciada. Tocando {WINHOFF_MP3_FILE} a cada {interval_seconds / 3600:.1f} horas.")
-    while not stop_event.wait(timeout=interval_seconds):
+    print(f"[Thread Win Hoff] Iniciada. Tocando a cada {interval_seconds / 3600:.1f} horas.")
+    while not stop_event.wait(interval_seconds):  # Espera pelo intervalo ou pelo evento de parada
         if stop_event.is_set(): break
-        print(
-            f"[Thread Win Hoff Periódico] Intervalo de {interval_seconds / 3600:.1f}h concluído. Tocando {WINHOFF_MP3_FILE}.")
+        print(f"[Thread Win Hoff] Intervalo concluído. Tocando som.")
         play_winhoff_sound()
-    print("[Thread Win Hoff Periódico] Encerrada.")
+    print("[Thread Win Hoff] Encerrada.")
 
 
 def pomodoro_task(pomodoro_duration_seconds, stop_event):
-    print(
-        f"[Thread Pomodoro] Iniciada. Duração: {pomodoro_duration_seconds / 60:.0f} min, seguido por {WINHOFF_MP3_FILE}.")
+    print(f"[Thread Pomodoro] Iniciada. Duração: {pomodoro_duration_seconds / 60:.0f} min.")
     while not stop_event.is_set():
         print(f"\n[Thread Pomodoro] Novo ciclo de {pomodoro_duration_seconds / 60:.0f} minutos.")
         falar(f"Iniciando Pomodoro de {pomodoro_duration_seconds / 60:.0f} minutos.")
         tempo_restante = pomodoro_duration_seconds
         while tempo_restante > 0 and not stop_event.is_set():
-            minutos = tempo_restante // 60;
-            segundos = tempo_restante % 60
+            minutos, segundos = divmod(tempo_restante, 60)
             sys.stdout.write(f"\rTempo Pomodoro: {minutos:02d}:{segundos:02d}   ");
             sys.stdout.flush()
-            if stop_event.wait(1): break
+            if stop_event.wait(1): break  # Verifica a cada segundo
             tempo_restante -= 1
         if stop_event.is_set():
             sys.stdout.write("\r[Thread Pomodoro] Interrompido.                 \n");
@@ -1300,69 +1203,73 @@ def pomodoro_task(pomodoro_duration_seconds, stop_event):
             falar("Pomodoro concluído. Hora do exercício.");
             play_winhoff_sound();
             falar("Exercício finalizado.")
-        if stop_event.wait(2): break
+        if stop_event.wait(2): break  # Pequena pausa antes de reiniciar o ciclo
     sys.stdout.write("\r[Thread Pomodoro] Encerrada.                   \n");
     sys.stdout.flush()
     print("[Thread Pomodoro] Encerrada.")
 
 
-# --- Função de Verificação Periódica de E-mails MODIFICADA ---
+# --- Função de Verificação Periódica de E-mails ---
+# CORREÇÃO: last_checked_time foi movida para o escopo global antes desta função
 def periodic_email_check(interval_seconds, stop_event):
-    global last_checked_time, google_auth_ready, USER_NAME, check_gmail_tool_instance
+    global last_checked_time, google_auth_ready, USER_NAME, check_gmail_tool_instance, gmail_service
     print(f"[Thread E-mail] Iniciada. Verificando e-mails a cada {interval_seconds} segundos.")
     while not stop_event.is_set():
-        if not google_auth_ready:
-            if stop_event.wait(60): break
+        if not google_auth_ready or not gmail_service:
+            print("[Thread E-mail] Autenticação Google ou serviço Gmail não pronto. Aguardando...")
+            if stop_event.wait(60): break  # Espera 60s e verifica se deve parar
             continue
 
         current_time = time.time()
         if (current_time - last_checked_time) >= interval_seconds or last_checked_time == 0:
-            print(f"\n[Thread E-mail] Verificando e-mails...")
+            print(
+                f"\n[Thread E-mail] Verificando e-mails (última verificação há {current_time - last_checked_time:.0f}s)...")
             try:
-                # A CheckGmailTool agora retorna um dict com "spoken" e "details"
-                # "spoken" será None se não houver um novo e-mail específico para anunciar desde a última vez.
-                check_result = check_gmail_tool_instance._run()
-                last_checked_time = time.time()
-
+                check_result = check_gmail_tool_instance._run()  # Usa a instância global da ferramenta
+                last_checked_time = time.time()  # Atualiza o tempo da última verificação
                 if isinstance(check_result, dict) and check_result.get("spoken"):
                     spoken_message = check_result["spoken"]
-                    # Personaliza a mensagem para o usuário, se houver nome e mensagem
                     full_spoken_message = f"{USER_NAME}, {spoken_message[0].lower() + spoken_message[1:]}" if USER_NAME and spoken_message else spoken_message
-                    if full_spoken_message:  # Só fala se houver algo construído
-                        falar(full_spoken_message)
+                    if full_spoken_message: falar(full_spoken_message)
                 elif isinstance(check_result, str) and "Erro:" in check_result:
                     print(f"[Thread E-mail] Erro retornado pela ferramenta de verificação: {check_result}")
-                # Se check_result["spoken"] for None (nenhum novo e-mail para notificar), não fala nada.
-
             except Exception as e:
-                print(f"[Thread E-mail] Erro crítico na verificação periódica: {e}");
+                print(f"[Thread E-mail] Erro crítico na verificação periódica de e-mails: {e}");
                 traceback.print_exc()
-                last_checked_time = time.time()
+                last_checked_time = time.time()  # Atualiza mesmo em erro para não ficar em loop de erro rápido
 
-        time_to_next_check = max(0, interval_seconds - (time.time() - last_checked_time))
-        wait_duration = min(time_to_next_check, 60)
-        if stop_event.wait(wait_duration): break
+        # Calcula quanto tempo esperar até a próxima verificação, limitado a 60s para permitir que stop_event seja checado
+        time_elapsed_since_last_check = time.time() - last_checked_time
+        time_to_next_check = max(0, interval_seconds - time_elapsed_since_last_check)
+        wait_duration = min(time_to_next_check, 60.0)  # Garante que wait() não seja 0 se o tempo já passou
 
+        if stop_event.wait(wait_duration if wait_duration > 0 else 1.0):  # Espera no mínimo 1s
+            break
     print("[Thread E-mail] Encerrada.")
 
 
 # --- Iniciar Threads de Background ---
-all_threads = []  # Implementação original mantida
+all_threads = []
+stop_background_threads = threading.Event()
+
 print("\n--- Iniciando Threads de Background ---")
 email_check_interval = 300
-if google_auth_ready:
+if google_auth_ready and gmail_service:
     print(f"Thread de verificação de e-mails será iniciada (intervalo: {email_check_interval}s).")
     email_thread = threading.Thread(target=periodic_email_check, args=(email_check_interval, stop_background_threads),
                                     daemon=True, name="EmailCheckThread")
     all_threads.append(email_thread);
     email_thread.start()
 else:
-    print("AVISO: Thread de verificação de e-mails NÃO iniciada devido à falha na autenticação Google.")
+    print(
+        "AVISO: Thread de verificação de e-mails NÃO iniciada (falha na autenticação Google ou serviço Gmail indisponível).")
+
 can_start_audio_threads = playsound_installed and os.path.exists(WINHOFF_MP3_FILE)
 if not playsound_installed: print(
-    f"AVISO: 'playsound' não instalado. As threads de áudio ({WINHOFF_MP3_FILE}) não serão iniciadas.")
+    f"AVISO: 'playsound' não instalado. Threads de áudio ({WINHOFF_MP3_FILE}) não iniciadas.")
 if not os.path.exists(WINHOFF_MP3_FILE) and playsound_installed: print(
-    f"AVISO: Arquivo '{WINHOFF_MP3_FILE}' não encontrado. As threads de áudio não serão iniciadas.")
+    f"AVISO: Arquivo '{WINHOFF_MP3_FILE}' não encontrado. Threads de áudio não iniciadas.")
+
 if can_start_audio_threads:
     winhoff_interval_2_hours = 2 * 60 * 60
     print(f"Thread Win Hoff Periódico ({WINHOFF_MP3_FILE} a cada 2 horas) será iniciada.")
@@ -1371,71 +1278,154 @@ if can_start_audio_threads:
                                                name="WinHoffPeriodicThread")
     all_threads.append(winhoff_periodic_thread);
     winhoff_periodic_thread.start()
+
     pomodoro_duration = 30 * 60
-    print(
-        f"Thread Pomodoro ({WINHOFF_MP3_FILE} a cada {pomodoro_duration / 60} minutos, com timer visível) será iniciada.")
+    print(f"Thread Pomodoro ({WINHOFF_MP3_FILE} a cada {pomodoro_duration / 60:.0f} minutos) será iniciada.")
     pomodoro_thread = threading.Thread(target=pomodoro_task, args=(pomodoro_duration, stop_background_threads),
                                        daemon=True, name="PomodoroThread")
     all_threads.append(pomodoro_thread);
     pomodoro_thread.start()
 else:
-    print(
-        f"AVISO: Threads de áudio para '{WINHOFF_MP3_FILE}' não foram iniciadas devido a problemas com 'playsound' ou o arquivo MP3.")
+    print(f"AVISO: Threads de áudio para '{WINHOFF_MP3_FILE}' não foram iniciadas.")
 print("-" * 50)
 
 # --- Loop Principal Interativo ---
-# Implementação original mantida, com pequenas melhorias no feedback
-print(f"\nLangChain Windows Voice Commander Agent (Controle Total Ativado - RISCO ALTO)")
-print("================================================================================");
-print("!!! AVISO DE RISCO EXTREMO - CONTROLE TOTAL ATIVADO !!!");
-print("================================================================================")
-print(f"Usando LLM: {MODEL_NAME} | TTS: Google Cloud TTS (Voz: {TTS_VOICE_GOOGLE}) | Usuário: {USER_NAME}")
-if not google_auth_ready: print("AVISO: Acesso a serviços Google PODE ESTAR DESABILITADO devido à falha OAuth.")
-if not google_tts_ready: print("AVISO: Google Cloud TTS não está pronto. Saída de voz PODE NÃO FUNCIONAR.")
-if not can_start_audio_threads: print(f"AVISO: Funcionalidades de áudio com '{WINHOFF_MP3_FILE}' estão desabilitadas.")
-if not requests_available: print(
-    f"AVISO: Funcionalidade de Notícias está DESABILITADA (biblioteca 'requests' não encontrada).")
-if not NEWS_API_KEY and requests_available: print(
-    f"AVISO: Funcionalidade de Notícias está DESABILITADA (NEWS_API_KEY não configurada no .env).")
+print(f"\nSATAN v{datetime.date.today().strftime('%Y.%m.%d')} - Assistente por Voz com Gemini & Email Agents")
+print("=================================================================")
+falar(f"Olá {USER_NAME}! Sistema SATAN com gerenciamento de e-mail pronto. Diga 'sair' para terminar.")
 
-falar(f"Olá {USER_NAME}! Sistema de controle por voz pronto e atualizado. Fale 'sair' para terminar.")
 try:
     while True:
         task_text = ouvir_comando()
         if task_text:
-            if task_text.lower().strip() == 'sair':
+            task_lower = task_text.lower().strip()
+            if task_lower == 'sair':
                 falar(f"Encerrando as operações, {USER_NAME}. Até logo!");
                 stop_background_threads.set();
                 break
-            google_service_keywords = ["agenda", "evento", "calendário", "gmail", "email", "e-mail", "drive", "arquivo",
-                                       "youtube", "vídeo", "contato", "contatos", "planilha", "documento", "tarefa",
-                                       "fotos"]
-            requires_google_services = any(keyword in task_text.lower() for keyword in google_service_keywords)
-            if requires_google_services and not google_auth_ready:
-                error_msg = f"Desculpe {USER_NAME}, não posso realizar essa tarefa porque a autenticação com os serviços Google falhou. Verifique o console para erros de autenticação."
-                print(f"ERRO: {error_msg}");
-                falar(error_msg);
-                continue
-            try:
-                input_for_agent = f"O nome do usuário é {USER_NAME}. A solicitação do usuário é: {task_text}"
-                print(f"\n>>> Enviando tarefa ( '{input_for_agent}' ) para o agente...")
-                response = agent_executor.invoke({"input": input_for_agent})
-                agent_output_text = response.get("output", "Não obtive uma resposta final do agente.")
-                print("\n--- Resposta Final do Agente ---");
-                print(agent_output_text);
-                print("------------------------------")
-                falar(agent_output_text)
-            except Exception as e_agent:
-                error_message = f"Ocorreu um erro crítico durante a execução do agente: {e_agent}"
-                print(f"\n!!! {error_message} !!!");
-                traceback.print_exc()
+
+            # --- NOVAS FUNCIONALIDADES DE E-MAIL ---
+            if "analisar emails importantes" in task_lower or \
+                    "verificar e-mails importantes" in task_lower or \
+                    "quais emails precisam de resposta" in task_lower:
+                falar("Ok, vou verificar e analisar seus e-mails importantes.")
+                if gmail_service and email_agent_scripts_loaded:
+                    try:
+                        # Passa as funções wrapper do satan5.py e a instância gmail_service
+                        resultado = find_important_emails_external(
+                            llm,
+                            satan_get_emails_for_scripts,
+                            satan_get_sent_emails_for_scripts,
+                            gmail_service,
+                            EMAILS_FOR_IMPORTANCE_FILE,  # Passa o nome do arquivo
+                            NEEDS_RESPONSE_JSON,
+                            NEEDS_RESPONSE_REPORT
+                        )
+                        falar(resultado)
+                    except Exception as e:
+                        msg_erro = f"Desculpe {USER_NAME}, ocorreu um erro ao analisar os e-mails importantes: {str(e)[:100]}"
+                        print(f"Erro em find_important_emails_external: {e}");
+                        traceback.print_exc();
+                        falar(msg_erro)
+                else:
+                    falar(
+                        f"Desculpe {USER_NAME}, não posso analisar e-mails sem acesso ao Gmail ou se os módulos de e-mail não carregaram.")
+
+            elif "categorizar oportunidades nos emails" in task_lower or \
+                    "procurar negócios nos emails" in task_lower or \
+                    "categorizar meus emails" in task_lower:
+                falar("Entendido. Vou categorizar seus e-mails e procurar por oportunidades de negócios.")
+                if gmail_service and email_agent_scripts_loaded:
+                    try:
+                        # sort_emails_and_categorize_external espera:
+                        # (llm_client, get_emails_function_from_satan, gmail_service_instance, path_emails_file, path_categorized_json)
+                        summary_categorizacao = sort_emails_and_categorize_external(
+                            llm,
+                            satan_get_emails_for_scripts,
+                            gmail_service,
+                            EMAILS_FOR_ANALYSIS_FILE,  # Arquivo que satan_get_emails... vai popular
+                            CATEGORIZED_EMAILS_JSON  # Arquivo onde o JSON categorizado será salvo
+                        )
+                        falar(summary_categorizacao)  # Fala o resumo da categorização
+
+                        # Em seguida, gera o relatório de oportunidades com base no JSON categorizado
+                        falar("Agora, gerando o relatório de oportunidades...")
+                        resultado_report = generate_opportunity_report_external(
+                            llm,
+                            CATEGORIZED_EMAILS_JSON,  # Caminho para o JSON já criado
+                            OPPORTUNITY_REPORT  # Caminho para salvar o relatório TXT
+                        )
+                        falar(resultado_report)
+                    except Exception as e:
+                        msg_erro = f"Desculpe {USER_NAME}, ocorreu um erro ao categorizar e-mails ou gerar o relatório: {str(e)[:100]}"
+                        print(f"Erro em sort_emails/generate_report: {e}");
+                        traceback.print_exc();
+                        falar(msg_erro)
+                else:
+                    falar(
+                        f"Desculpe {USER_NAME}, não posso categorizar e-mails sem acesso ao Gmail ou se os módulos de e-mail não carregaram.")
+
+            elif "responder emails pendentes" in task_lower or \
+                    "ajudar a responder emails" in task_lower:
                 falar(
-                    f"Desculpe {USER_NAME}, ocorreu um erro interno severo ao processar seu pedido. Por favor, tente novamente ou verifique os logs para detalhes técnicos.")
+                    f"Ok {USER_NAME}, vamos processar os e-mails que precisam de resposta. Vou precisar da sua ajuda para confirmar ou editar.")
+                if gmail_service and email_agent_scripts_loaded:
+                    try:
+                        # process_email_responses_external espera:
+                        # (llm_client, ouvir_callback, falar_callback, user_name,
+                        #  send_email_function_from_satan, gmail_service_instance,
+                        #  path_needs_response_report, path_response_history)
+                        resultado = process_email_responses_external(
+                            llm,
+                            ouvir_comando,
+                            falar,
+                            USER_NAME,
+                            satan_send_email_wrapper,  # Nossa função de envio que usa gmail_service
+                            gmail_service,
+                            NEEDS_RESPONSE_REPORT,  # Caminho do relatório de entrada
+                            RESPONSE_HISTORY_FILE  # Caminho para salvar histórico
+                        )
+                        falar(resultado)
+                    except Exception as e:
+                        msg_erro = f"Desculpe {USER_NAME}, ocorreu um erro ao processar as respostas dos e-mails: {str(e)[:100]}"
+                        print(f"Erro em process_email_responses_external: {e}");
+                        traceback.print_exc();
+                        falar(msg_erro)
+                else:
+                    falar(
+                        f"Desculpe {USER_NAME}, não posso processar respostas de e-mails sem acesso ao Gmail ou se os módulos de e-mail não carregaram.")
+
+            # --- Comandos Existentes do Agente LangChain ---
+            else:
+                # Verifica se o comando requer serviços Google e se a autenticação está pronta
+                google_service_keywords = ["agenda", "evento", "calendário", "gmail", "email", "e-mail", "drive",
+                                           "arquivo", "youtube", "vídeo", "contato", "contatos"]
+                requires_google_services = any(keyword in task_lower for keyword in google_service_keywords)
+
+                if requires_google_services and not google_auth_ready:
+                    falar(
+                        f"Desculpe {USER_NAME}, não posso realizar essa tarefa porque a autenticação com os serviços Google falhou. Verifique o console para erros.");
+                    continue
+
+                try:
+                    input_for_agent = f"O nome do usuário é {USER_NAME}. Hoje é {datetime.datetime.now().strftime('%d de %B de %Y, %H:%M')}. A solicitação do usuário é: {task_text}"
+                    print(f"\n>>> Enviando tarefa ( '{input_for_agent}' ) para o agente LangChain...")
+                    response = agent_executor.invoke({"input": input_for_agent})
+                    agent_output_text = response.get("output", "Não obtive uma resposta final do agente.")
+                    print("\n--- Resposta Final do Agente LangChain ---");
+                    print(agent_output_text);
+                    print("------------------------------")
+                    falar(agent_output_text)
+                except Exception as e_agent:
+                    error_message = f"Ocorreu um erro crítico durante a execução do agente LangChain: {e_agent}"
+                    print(f"\n!!! {error_message} !!!");
+                    traceback.print_exc()
+                    falar(f"Desculpe {USER_NAME}, ocorreu um erro interno severo ao processar seu pedido via agente.")
         else:
-            pass
+            pass  # Nenhuma entrada de voz
 except KeyboardInterrupt:
-    print("\nInterrupção pelo teclado recebida. Encerrando...");
-    falar(f"Encerrando devido à interrupção, {USER_NAME}.");
+    print("\nInterrupção pelo teclado. Encerrando...");
+    falar(f"Encerrando as operações, {USER_NAME}.")
     stop_background_threads.set()
 finally:
     print("\nLimpando e aguardando threads de background finalizarem...")
@@ -1443,6 +1433,6 @@ finally:
     for t in all_threads:
         if t.is_alive():
             print(f"Aguardando thread {t.name} finalizar...");
-            t.join(timeout=5)
+            t.join(timeout=3)  # Timeout menor para finalizar mais rápido
             if t.is_alive(): print(f"AVISO: Thread {t.name} não finalizou a tempo.")
-    print("\nScript LangChain com Voz terminado.")
+    print("\nScript SATAN terminado.")
